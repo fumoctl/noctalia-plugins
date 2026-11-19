@@ -2,6 +2,10 @@
 
 Mirror any screen, individual window, or rectangular region onto another display through XDG `ScreenCast` and a click-through `zwlr-layer-shell-v1` overlay surface — no compositor window rules required.
 
+## Screenshots
+
+![Portal Screen Mirror panel](screenshots/panel.webp)
+
 ## Plugin
 
 | Field | Value |

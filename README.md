@@ -1,108 +1,51 @@
-# noctalia-plugins
+<div align="center">
+  <img src="https://assets.noctalia.dev/noctalia-logo.svg?v=2" alt="Noctalia Logo" width="128" />
 
-Personal [Noctalia](https://github.com/noctalia-dev/noctalia) plugin source repository.
+  <h1>noctalia-plugins</h1>
 
-## Plugins
+  <p>Personal <a href="https://github.com/noctalia-dev/noctalia">Noctalia</a> plugin source repository by <a href="https://github.com/fumoctl">@fumoctl</a>.</p>
+</div>
 
-- [`fumoctl/portal-screen-mirror`](portal-screen-mirror/README.md) — Mirror any screen, individual window, or rectangular region onto another display via XDG `ScreenCast` (or `zwlr_screencopy_manager_v1` for regions) and a click-through `zwlr-layer-shell-v1` overlay surface.
+---
 
-## Compatibility (`fumoctl/portal-screen-mirror`)
+## Add This Source
 
-`fumoctl/portal-screen-mirror` is compositor-agnostic across Wayland desktops where Noctalia runs, with zero compositor-specific CLI or IPC calls:
-
-| Component | Protocol / API Used | Compositor Support |
-| :--- | :--- | :--- |
-| **Output discovery & UI** | `noctalia.outputs()` (`wl_output` + `xdg-output`) | Any compositor running Noctalia |
-| **Mirror display surface** | `zwlr-layer-shell-v1` (`[[layer]]` + `ui.pixelStream`) | Any layer-shell compositor (Umbriel, Hyprland, Niri, Sway, MangoWC, Labwc, River, KDE KWin — i.e., everywhere Noctalia runs; GNOME Mutter lacks `zwlr-layer-shell-v1`) |
-| **Portal Picker mode** | `org.freedesktop.portal.ScreenCast` (`types = 3`) + PipeWire SHM (`MemFd`) | **Full screen + individual windows** on Umbriel (`xdg-desktop-portal-umbriel`), Hyprland (`xdg-desktop-portal-hyprland`), Niri (`xdg-desktop-portal-gnome`), and KDE (`xdg-desktop-portal-kde`). **Full screen only** on Sway, Labwc, and River using `xdg-desktop-portal-wlr` (since `xdg-desktop-portal-wlr` implements monitor capture only, not per-window capture). |
-| **Rectangular Region mode** | `slurp` + `zwlr_screencopy_manager_v1`, with automatic `ScreenCast` + `videocrop` fallback | **Instant (no portal prompt)** on compositors implementing `wlr-screencopy` (Umbriel, Hyprland, Niri, Sway, River, Labwc, MangoWC). **Automatic portal fallback** (prompts once per monitor and caches `restore_token`) on compositors without `wlr-screencopy` (such as KDE KWin). |
-
-- **No compositor window rules required**: Frames render into a plugin-owned `zwlr-layer-shell-v1` `overlay` surface bound directly to the target connector (`noctalia.layer.configure`), avoiding `xdg_toplevel.set_fullscreen` output-placement quirks.
-- **PipeWire pixel formats**: Negotiates `{BGRx, BGRA, RGBx, RGBA}` system-memory (`MemFd`) buffers, supported by every major `ScreenCast` portal backend (`-umbriel`, `-hyprland`, `-wlr`, `-gnome`, `-kde`).
-
-## Dependencies by Distribution (`fumoctl/portal-screen-mirror`)
-
-Install the runtime packages below along with your compositor's `xdg-desktop-portal` `ScreenCast` backend (`xdg-desktop-portal-umbriel`, `xdg-desktop-portal-hyprland`, `xdg-desktop-portal-gnome`, `xdg-desktop-portal-kde`, or `xdg-desktop-portal-wlr`):
-
-| Distribution | Install Command |
-| :--- | :--- |
-| **Arch / CachyOS / EndeavourOS** | `sudo pacman -S python python-gobject gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire slurp wayland pipewire xdg-desktop-portal` |
-| **Fedora** | `sudo dnf install python3 python3-gobject gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good pipewire-gstreamer slurp wayland-libs-client pipewire xdg-desktop-portal` |
-| **Debian / Ubuntu / Pop!_OS** | `sudo apt install python3 python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire slurp libwayland-client0 pipewire xdg-desktop-portal` |
-| **openSUSE Tumbleweed / Slowroll** | `sudo zypper install python3 python3-gobject typelib-1_0-Gst-1_0 gstreamer gstreamer-plugins-base gstreamer-plugins-good gstreamer-plugin-pipewire slurp libwayland-client0 pipewire xdg-desktop-portal` |
-| **Void Linux** | `sudo xbps-install -S python3 python3-gobject gstreamer1 gst-plugins-base1 gst-plugins-good1 gstreamer1-pipewire slurp wayland pipewire xdg-desktop-portal` |
-| **NixOS (Home Manager)** | Expose `screenMirrorPyEnv`, `slurp`, `GI_TYPELIB_PATH`, `GST_PLUGIN_SYSTEM_PATH_1_0`, and `wayland` to `noctalia.service` — see below or [portal-screen-mirror/README.md](portal-screen-mirror/README.md#packages-by-distribution). |
-
-## Using as a Noctalia Git Source
-
-### Standard Linux Distributions (CLI / GUI)
-
-Once the dependencies above are installed, add the source and enable the plugin:
+Register this repository once in Noctalia to browse, install, and update any plugin listed below:
 
 ```sh
 noctalia msg plugins source add fumoctl git https://github.com/fumoctl/noctalia-plugins
-noctalia msg plugins enable fumoctl/portal-screen-mirror
 ```
 
-### NixOS (Declarative Home Manager)
+*(Using NixOS / Home Manager? Each plugin's README includes a ready-to-paste declarative snippet.)*
 
-Add the runtime environment and `plugins.source` entry to your Home Manager module, then rebuild (`nixos-rebuild switch` / `nh os switch`):
+---
 
-```nix
-{ lib, pkgs, ... }:
-let
-  screenMirrorPyEnv = pkgs.python3.withPackages (ps: [ ps.pygobject3 ]);
-  screenMirrorTypelibPath = lib.makeSearchPath "lib/girepository-1.0" [
-    pkgs.glib.out
-    pkgs.gst_all_1.gstreamer.out
-  ];
-  screenMirrorGstPluginPath = lib.makeSearchPath "lib/gstreamer-1.0" [
-    pkgs.pipewire
-    pkgs.gst_all_1.gstreamer.out
-    pkgs.gst_all_1.gst-plugins-base
-    pkgs.gst_all_1.gst-plugins-good
-  ];
-in
-{
-  home.packages = [
-    screenMirrorPyEnv
-    pkgs.slurp
-  ];
+## Plugins
 
-  systemd.user.services.noctalia.Service.Environment = [
-    "GI_TYPELIB_PATH=${screenMirrorTypelibPath}"
-    "GST_PLUGIN_SYSTEM_PATH_1_0=${screenMirrorGstPluginPath}"
-    "LD_LIBRARY_PATH=${lib.makeLibraryPath [ pkgs.wayland ]}"
-  ];
-
-  programs.noctalia.settings.plugins = {
-    auto_update = "all";
-    enabled = [ "fumoctl/portal-screen-mirror" ];
-    source = [
-      {
-        name = "official";
-        kind = "git";
-        location = "https://github.com/noctalia-dev/official-plugins";
-      }
-      {
-        name = "community";
-        kind = "git";
-        location = "https://github.com/noctalia-dev/community-plugins";
-      }
-      {
-        name = "fumoctl";
-        kind = "git";
-        location = "https://github.com/fumoctl/noctalia-plugins";
-      }
-    ];
-  };
-}
-```
-
-## Opening a PR to `noctalia-dev/community-plugins`
-
-1. Fork and clone `https://github.com/noctalia-dev/community-plugins`, then create a branch.
-2. Copy `portal-screen-mirror/` into the root of that checkout (`cp -r portal-screen-mirror /path/to/community-plugins/`).
-   - Do **not** copy `catalog.toml` — `community-plugins` regenerates its `catalog.toml` automatically in CI.
-   - Optionally replace `portal-screen-mirror/thumbnail.webp` with a live screenshot exported via [thumbnail-generator.html](https://assets.noctalia.dev/plugins/thumbnail-generator.html) (`960x540` WebP).
-3. Commit and open a PR against `noctalia-dev/community-plugins:main`.
+<table>
+  <thead>
+    <tr>
+      <th width="340">Preview</th>
+      <th>Plugin</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <a href="portal-screen-mirror/README.md">
+          <img src="portal-screen-mirror/thumbnail.webp" alt="Portal Screen Mirror" width="320" />
+        </a>
+      </td>
+      <td>
+        <h3><a href="portal-screen-mirror/README.md">Portal Screen Mirror</a></h3>
+        <p><code>fumoctl/portal-screen-mirror</code> · <code>bar</code> · <code>panel</code> · <code>layer</code> · <code>service</code> · <code>shortcut</code></p>
+        <p>Mirror any screen, individual window, or rectangular region onto another display via XDG <code>ScreenCast</code> (or <code>zwlr_screencopy_manager_v1</code>) and a click-through <code>zwlr-layer-shell-v1</code> overlay surface — zero compositor window rules required.</p>
+        <p>
+          <a href="portal-screen-mirror/README.md"><strong>Documentation →</strong></a> ·
+          <a href="portal-screen-mirror/README.md#compatibility">Compatibility</a> ·
+          <a href="portal-screen-mirror/README.md#packages-by-distribution">Distro &amp; NixOS Setup</a>
+        </p>
+      </td>
+    </tr>
+  </tbody>
+</table>

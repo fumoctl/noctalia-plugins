@@ -1,6 +1,6 @@
 id = "fumoctl/portal-screen-mirror"
 name = "Portal Screen Mirror"
-version = "1.2.0"
+version = "1.2.1"
 plugin_api = 50
 author = "fumoctl"
 license = "MIT"
