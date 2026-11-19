@@ -6,7 +6,12 @@ local status = noctalia.state.get("mirror_status") or {
 	phase = "stopped",
 	running = false,
 }
-local requestSerial = 0
+
+local function nextSerial(stateKey)
+	local prev = noctalia.state.get(stateKey)
+	local prevSerial = (type(prev) == "table" and type(prev.serial) == "number") and prev.serial or 0
+	return prevSerial + 1
+end
 
 local function tr(key, values)
 	return noctalia.tr(key, values)
@@ -112,10 +117,9 @@ end
 function onRightClick()
 	local phase = status.phase or "stopped"
 	if phase == "running" or phase == "starting" then
-		requestSerial += 1
 		noctalia.state.set("mirror_request", {
 			action = "stop",
-			serial = requestSerial,
+			serial = nextSerial("mirror_request"),
 		})
 		return
 	end

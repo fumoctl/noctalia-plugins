@@ -34,9 +34,13 @@ end
 local outputs = {}
 local destinationName = nil
 local destinationIndex = -1
-local requestSerial = 0
-local fpsSerial = 0
 local render
+
+local function nextSerial(stateKey)
+	local prev = noctalia.state.get(stateKey)
+	local prevSerial = (type(prev) == "table" and type(prev.serial) == "number") and prev.serial or 0
+	return prevSerial + 1
+end
 
 local initialPrefs = noctalia.state.get("mirror_prefs")
 local selectedFps = normalizeFps(
@@ -161,13 +165,12 @@ local function startMode(mode)
 	if destinationName == nil or destinationName == "" then
 		return
 	end
-	requestSerial += 1
 	noctalia.state.set("mirror_request", {
 		action = "start",
 		mode = mode,
 		destination = destinationName,
 		max_fps = selectedFps,
-		serial = requestSerial,
+		serial = nextSerial("mirror_request"),
 	})
 	panel.close()
 end
@@ -177,10 +180,9 @@ function onCloseClicked()
 end
 
 function onStopClicked()
-	requestSerial += 1
 	noctalia.state.set("mirror_request", {
 		action = "stop",
-		serial = requestSerial,
+		serial = nextSerial("mirror_request"),
 	})
 end
 
@@ -198,10 +200,9 @@ function onFpsChanged(idxStr)
 	local chosen = idx ~= nil and FPS_OPTIONS[idx + 1] or nil
 	if chosen ~= nil then
 		selectedFps = chosen.value
-		fpsSerial += 1
 		noctalia.state.set("mirror_fps_request", {
 			max_fps = selectedFps,
-			serial = fpsSerial,
+			serial = nextSerial("mirror_fps_request"),
 		})
 		render()
 	end
@@ -216,10 +217,9 @@ function onRegionClicked()
 end
 
 function onOpenRepoClicked()
-	requestSerial += 1
 	noctalia.state.set("mirror_request", {
 		action = "open_repo",
-		serial = requestSerial,
+		serial = nextSerial("mirror_request"),
 	})
 	panel.close()
 end

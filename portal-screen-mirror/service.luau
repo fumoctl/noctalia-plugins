@@ -78,8 +78,10 @@ local probingBinary = false
 local pendingStart = nil
 
 local sessionCounter = 0
-local lastRequestSerial = -1
-local lastFpsSerial = -1
+local initReq = noctalia.state.get("mirror_request")
+local lastRequestSerial = (type(initReq) == "table" and type(initReq.serial) == "number") and initReq.serial or -1
+local initFpsReq = noctalia.state.get("mirror_fps_request")
+local lastFpsSerial = (type(initFpsReq) == "table" and type(initFpsReq.serial) == "number") and initFpsReq.serial or -1
 local streamActive = false
 local notifyOnStop = false
 local pendingRestart = nil
