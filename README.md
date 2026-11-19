@@ -20,9 +20,22 @@ Personal [Noctalia](https://github.com/noctalia-dev/noctalia) plugin source repo
 - **No compositor window rules required**: Frames render into a plugin-owned `zwlr-layer-shell-v1` `overlay` surface bound directly to the target connector (`noctalia.layer.configure`), avoiding `xdg_toplevel.set_fullscreen` output-placement quirks.
 - **PipeWire pixel formats**: Negotiates `{BGRx, BGRA, RGBx, RGBA}` system-memory (`MemFd`) buffers, supported by every major `ScreenCast` portal backend (`-umbriel`, `-hyprland`, `-wlr`, `-gnome`, `-kde`).
 
+## Dependencies by Distribution (`fumoctl/portal-screen-mirror`)
+
+Install the runtime packages below along with your compositor's `xdg-desktop-portal` `ScreenCast` backend (`xdg-desktop-portal-umbriel`, `xdg-desktop-portal-hyprland`, `xdg-desktop-portal-gnome`, `xdg-desktop-portal-kde`, or `xdg-desktop-portal-wlr`):
+
+| Distribution | Install Command |
+| :--- | :--- |
+| **Arch / CachyOS / EndeavourOS** | `sudo pacman -S python python-gobject gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire slurp wayland pipewire xdg-desktop-portal` |
+| **Fedora** | `sudo dnf install python3 python3-gobject gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good pipewire-gstreamer slurp wayland-libs-client pipewire xdg-desktop-portal` |
+| **Debian / Ubuntu / Pop!_OS** | `sudo apt install python3 python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire slurp libwayland-client0 pipewire xdg-desktop-portal` |
+| **openSUSE Tumbleweed / Slowroll** | `sudo zypper install python3 python3-gobject typelib-1_0-Gst-1_0 gstreamer gstreamer-plugins-base gstreamer-plugins-good gstreamer-plugin-pipewire slurp libwayland-client0 pipewire xdg-desktop-portal` |
+| **Void Linux** | `sudo xbps-install -S python3 python3-gobject gstreamer1 gst-plugins-base1 gst-plugins-good1 gstreamer1-pipewire slurp wayland pipewire xdg-desktop-portal` |
+| **NixOS (Home Manager)** | Expose `pygobject3`, `slurp`, `GI_TYPELIB_PATH`, `GST_PLUGIN_SYSTEM_PATH_1_0`, and `wayland` to `noctalia.service` — see [portal-screen-mirror/README.md](portal-screen-mirror/README.md#packages-by-distribution) for a copy-paste module snippet. |
+
 ## Using as a Noctalia Git Source
 
-Ensure runtime dependencies (`python3` with `PyGObject`, GStreamer `base`/`good`/`pipewire` plugins, `slurp`, `pipewire`, and an `xdg-desktop-portal` `ScreenCast` backend) are installed, then add the source:
+Once the dependencies above are installed, add the source and enable the plugin:
 
 ```sh
 noctalia msg plugins source add fumoctl git https://github.com/fumoctl/noctalia-plugins
