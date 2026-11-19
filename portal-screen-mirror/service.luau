@@ -1,7 +1,6 @@
 --!nonstrict
 
 local PANEL_ID = "fumoctl/portal-screen-mirror:controls"
-local LAYER_ID = "display"
 
 local VALID_FPS = {
 	auto = true,
@@ -16,12 +15,25 @@ local function normalizeFps(value)
 	return VALID_FPS[s] and s or "auto"
 end
 
-local pluginDir = noctalia.pluginDir()
+local function normalizeFit(value)
+	if value == "cover" or value == "stretch" then
+		return value
+	end
+	return "contain"
+end
+
+local function normalizeFilter(value)
+	if value == "fast" then
+		return "nearest"
+	end
+	return "linear"
+end
+
 local dataDir = noctalia.pluginDataDir()
 local runFile = dataDir and (dataDir .. "/mirror.run") or nil
-local fpsFile = dataDir and (dataDir .. "/fps.run") or nil
+local liveFile = dataDir and (dataDir .. "/live.cfg") or nil
+local errFile = dataDir and (dataDir .. "/mirror.err") or nil
 local prefsFile = dataDir and (dataDir .. "/prefs.json") or nil
-local sockFile = dataDir and (dataDir .. "/stream.sock") or nil
 
 local sessionCounter = 0
 local lastRequestSerial = -1
@@ -36,7 +48,6 @@ local status = {
 	running = false,
 	destination = nil,
 	mode = nil,
-	socket = nil,
 	message = "",
 }
 
@@ -49,13 +60,21 @@ local function shellQuote(value)
 end
 
 local function isInternalPanel(name)
-	return string.sub(name or "", 1, 4) == "eDP-"
+	local n = name or ""
+	return string.sub(n, 1, 4) == "eDP-" or string.sub(n, 1, 5) == "LVDS-" or string.sub(n, 1, 4) == "DSI-"
+end
+
+local function writeLiveConfig()
+	if liveFile == nil then
+		return
+	end
+	local fit = normalizeFit(noctalia.getConfig("fit"))
+	local filter = normalizeFilter(noctalia.getConfig("scale_quality"))
+	noctalia.writeFile(liveFile, fit .. " " .. filter .. " " .. selectedFps .. "\n")
 end
 
 local function syncFpsState(persistPrefs, configBase)
-	if fpsFile ~= nil then
-		noctalia.writeFile(fpsFile, selectedFps .. "\n")
-	end
+	writeLiveConfig()
 	if persistPrefs and prefsFile ~= nil then
 		local encoded = noctalia.json.encode({
 			max_fps = selectedFps,
@@ -102,7 +121,6 @@ local function publishStatus(phase, message)
 		running = status.running,
 		destination = status.destination,
 		mode = status.mode,
-		socket = status.socket,
 		message = status.message,
 	})
 end
@@ -149,11 +167,11 @@ local function cleanupFiles()
 	if runFile ~= nil then
 		noctalia.removeFile(runFile)
 	end
-	if fpsFile ~= nil then
-		noctalia.removeFile(fpsFile)
+	if liveFile ~= nil then
+		noctalia.removeFile(liveFile)
 	end
-	if sockFile ~= nil then
-		noctalia.removeFile(sockFile)
+	if errFile ~= nil then
+		noctalia.removeFile(errFile)
 	end
 end
 
@@ -162,12 +180,10 @@ local startMirror
 local function finishStopped(showOsd, customMsg)
 	streamActive = false
 	notifyOnStop = false
-	noctalia.layer.hide(LAYER_ID)
 	cleanupFiles()
 
 	status.destination = nil
 	status.mode = nil
-	status.socket = nil
 	publishStatus("stopped", customMsg or "")
 
 	if showOsd then
@@ -185,12 +201,10 @@ local function finishFailed(errMsg)
 	streamActive = false
 	notifyOnStop = false
 	pendingRestart = nil
-	noctalia.layer.hide(LAYER_ID)
 	cleanupFiles()
 
 	status.destination = nil
 	status.mode = nil
-	status.socket = nil
 	local msg = (type(errMsg) == "string" and errMsg ~= "") and errMsg or tr("error.stream_exited")
 	publishStatus("error", msg)
 	noctalia.notifyError(tr("title"), msg)
@@ -203,57 +217,81 @@ local function stopMirror(showOsd, customMsg)
 	end
 	notifyOnStop = showOsd == true
 	publishStatus("stopping", tr("widget.stopping"))
-	noctalia.layer.hide(LAYER_ID)
 	if runFile ~= nil then
 		noctalia.removeFile(runFile)
 	end
 end
 
-local function buildCompanionCmd(sessionId, destOut, mode)
-	local companionPath = (pluginDir or ".") .. "/companion.py"
-	local scale = tonumber(destOut.scale) or 1.0
-	if scale <= 0 then
-		scale = 1.0
-	end
-	local maxW = math.max(64, math.floor((tonumber(destOut.width) or 1920) * scale + 0.5))
-	local maxH = math.max(64, math.floor((tonumber(destOut.height) or 1080) * scale + 0.5))
-	local cursorMode = noctalia.getConfig("show_cursor") ~= false and 2 or 1
-	local scaleQuality = noctalia.getConfig("scale_quality") == "fast" and "fast" or "balanced"
-	local outputsJson = noctalia.json.encode(noctalia.outputs() or {}) or "[]"
+local function buildDaemonCmd(destName, mode)
+	local fit = normalizeFit(noctalia.getConfig("fit"))
+	local filter = normalizeFilter(noctalia.getConfig("scale_quality"))
+	local showCursor = noctalia.getConfig("show_cursor") ~= false
 
-	local args = {
-		shellQuote(companionPath),
-		"--socket",
-		shellQuote(sockFile),
-		"--run-file",
-		shellQuote(runFile),
-		"--session-id",
-		shellQuote(sessionId),
-		"--data-dir",
-		shellQuote(dataDir),
-		"--destination",
-		shellQuote(destOut.name or ""),
-		"--mode",
+	local launchParts = {
+		"portal-screen-mirror",
 		shellQuote(mode),
-		"--cursor-mode",
-		tostring(cursorMode),
-		"--max-width",
-		tostring(maxW),
-		"--max-height",
-		tostring(maxH),
+		"--to",
+		shellQuote(destName),
+		"--fit",
+		shellQuote(fit),
+		"--filter",
+		shellQuote(filter),
 		"--max-fps",
 		shellQuote(selectedFps),
-		"--scale-quality",
-		shellQuote(scaleQuality),
-		"--outputs-json",
-		shellQuote(outputsJson),
 	}
-	if fpsFile ~= nil then
-		table.insert(args, "--fps-file")
-		table.insert(args, shellQuote(fpsFile))
+	if not showCursor then
+		table.insert(launchParts, "--no-cursor")
 	end
-	table.insert(args, "2>/dev/null || printf 'exited:%s\\n' \"$?\"")
-	return table.concat(args, " ")
+	local launchCmd = table.concat(launchParts, " ") .. ' >"$ERR" 2>&1 &'
+
+	return table.concat({
+		"RUN=" .. shellQuote(runFile),
+		"CFG=" .. shellQuote(liveFile),
+		"ERR=" .. shellQuote(errFile),
+		"OWNER=$PPID",
+		': > "$ERR"',
+		"portal-screen-mirror stop >/dev/null 2>&1 || true",
+		launchCmd,
+		"PID=$!",
+		[[trap 'portal-screen-mirror stop >/dev/null 2>&1 || true; kill -TERM "$PID" 2>/dev/null || true' HUP INT TERM EXIT]],
+		[[printf 'selecting\n']],
+		"READY=0",
+		[[LAST_CFG=$(cat "$CFG" 2>/dev/null || true)]],
+		[[while [ -f "$RUN" ] && kill -0 "$OWNER" 2>/dev/null && kill -0 "$PID" 2>/dev/null; do]],
+		[[  if [ "$READY" -eq 0 ]; then]],
+		[[    if portal-screen-mirror status >/dev/null 2>&1; then READY=1; printf 'ready\n'; fi]],
+		[[  else]],
+		[[    CUR_CFG=$(cat "$CFG" 2>/dev/null || true)]],
+		[[    if [ -n "$CUR_CFG" ] && [ "$CUR_CFG" != "$LAST_CFG" ]; then]],
+		[[      LAST_CFG="$CUR_CFG"]],
+		[[      set -- $CUR_CFG]],
+		[[      if [ "$#" -ge 3 ]; then portal-screen-mirror set --fit "$1" --filter "$2" --max-fps "$3" >/dev/null 2>&1 || true; fi]],
+		[[    fi]],
+		[[  fi]],
+		[[  sleep 0.1]],
+		[[done]],
+		[[if [ ! -f "$RUN" ] || ! kill -0 "$OWNER" 2>/dev/null; then]],
+		[[  portal-screen-mirror stop >/dev/null 2>&1 || true]],
+		[[  kill -TERM "$PID" 2>/dev/null || true]],
+		[[  ATTEMPT=0]],
+		[[  while kill -0 "$PID" 2>/dev/null && [ "$ATTEMPT" -lt 20 ]; do sleep 0.05; ATTEMPT=$((ATTEMPT + 1)); done]],
+		[[  kill -KILL "$PID" 2>/dev/null || true]],
+		[[  wait "$PID" 2>/dev/null || true]],
+		[[  trap - HUP INT TERM EXIT]],
+		[[  printf 'stopped\n']],
+		[[else]],
+		[[  wait "$PID"; CODE=$?]],
+		[[  trap - HUP INT TERM EXIT]],
+		[[  if [ "$READY" -eq 0 ] && [ "$CODE" -eq 0 ]; then]],
+		[[    printf 'cancelled\n']],
+		[[  elif [ "$CODE" -ne 0 ] && [ "$CODE" -ne 130 ] && [ "$CODE" -ne 143 ]; then]],
+		[[    MSG=$(grep -v '^[[:space:]]*$' "$ERR" 2>/dev/null | tail -n 1 | sed 's/^portal-screen-mirror: error: //')]],
+		[[    if [ -n "$MSG" ]; then printf 'error:%s\n' "$MSG"; else printf 'exited:%s\n' "$CODE"; fi]],
+		[[  else]],
+		[[    printf 'exited:%s\n' "$CODE"]],
+		[[  fi]],
+		[[fi]],
+	}, "\n")
 end
 
 local function handleStreamLine(line)
@@ -269,16 +307,6 @@ local function handleStreamLine(line)
 			stopMirror(false)
 			return
 		end
-		status.socket = sockFile
-		noctalia.layer.configure(LAYER_ID, {
-			output = status.destination,
-			layer = "overlay",
-			anchors = { "top", "bottom", "left", "right" },
-			exclusiveZone = -1,
-			keyboard = "none",
-			clickThrough = true,
-		})
-		noctalia.layer.show(LAYER_ID)
 		publishStatus("running", tr("panel.status_running", { destination = status.destination }))
 		noctalia.osd.show("screen-share", tr("osd.started", { destination = status.destination }))
 	elseif line == "cancelled" then
@@ -300,16 +328,16 @@ end
 startMirror = function(destination, mode)
 	mode = (mode == "region") and "region" or "portal"
 
-	if runFile == nil or sockFile == nil or pluginDir == nil or dataDir == nil then
+	if runFile == nil or liveFile == nil or errFile == nil then
 		finishFailed(tr("error.launch_failed"))
 		return
 	end
-	if not noctalia.portalAvailable() then
-		finishFailed(tr("error.portal_unavailable"))
+	if not noctalia.commandExists("portal-screen-mirror") then
+		finishFailed(tr("error.binary_missing"))
 		return
 	end
-	if mode == "region" and not noctalia.commandExists("slurp") then
-		finishFailed(tr("error.slurp_missing"))
+	if mode == "portal" and not noctalia.portalAvailable() then
+		finishFailed(tr("error.portal_unavailable"))
 		return
 	end
 
@@ -327,9 +355,7 @@ startMirror = function(destination, mode)
 
 	sessionCounter += 1
 	local sessionId = tostring(noctalia.nowMs()) .. "-" .. tostring(sessionCounter)
-	if fpsFile ~= nil then
-		noctalia.writeFile(fpsFile, selectedFps .. "\n")
-	end
+	writeLiveConfig()
 	local ok, err = noctalia.writeFile(runFile, sessionId .. "\n")
 	if not ok then
 		finishFailed(err or tr("error.launch_failed"))
@@ -338,12 +364,11 @@ startMirror = function(destination, mode)
 
 	status.destination = destination
 	status.mode = mode
-	status.socket = nil
 	notifyOnStop = false
 	streamActive = true
 	publishStatus("starting", tr("panel.status_starting"))
 
-	local cmd = buildCompanionCmd(sessionId, destOut, mode)
+	local cmd = buildDaemonCmd(destOut.name, mode)
 	if not noctalia.runStream(cmd, handleStreamLine) then
 		streamActive = false
 		cleanupFiles()
@@ -437,7 +462,6 @@ end
 
 function onExit(_signal, _reason)
 	pendingRestart = nil
-	noctalia.layer.hide(LAYER_ID)
 	cleanupFiles()
 end
 

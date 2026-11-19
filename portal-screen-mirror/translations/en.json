@@ -14,7 +14,7 @@
     },
     "max_fps": {
       "label": "Max frame rate",
-      "description": "Caps mirror capture and conversion rate (can also be changed live from the bar panel).",
+      "description": "Caps mirror presentation rate (can also be changed live from the bar panel).",
       "auto": "Auto (Match display)",
       "fps_30": "30 FPS (Battery saver)",
       "fps_60": "60 FPS (Smooth video)",
@@ -23,9 +23,9 @@
     },
     "scale_quality": {
       "label": "Scaling filter",
-      "description": "Balances sharpness against CPU latency when downscaling.",
+      "description": "GPU texture sampling filter when scaling onto the destination display.",
       "balanced": "Balanced (Bilinear)",
-      "fast": "Low latency (Nearest)"
+      "fast": "Crisp pixels (Nearest)"
     }
   },
   "widget": {
@@ -67,11 +67,10 @@
   },
   "error": {
     "portal_unavailable": "Desktop portal is unavailable",
-    "slurp_missing": "slurp is not installed",
-    "python_missing": "python3 is not installed",
+    "binary_missing": "portal-screen-mirror binary is not installed",
     "no_destination": "Connect a second display first",
     "disconnected": "Destination display disconnected",
-    "launch_failed": "Failed to launch mirror companion",
+    "launch_failed": "Failed to launch portal-screen-mirror",
     "stream_exited": "Mirror stream ended unexpectedly"
   }
 }

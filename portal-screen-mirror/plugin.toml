@@ -1,13 +1,13 @@
 id = "fumoctl/portal-screen-mirror"
 name = "Portal Screen Mirror"
-version = "1.2.1"
+version = "2.0.0"
 plugin_api = 50
 author = "fumoctl"
 license = "MIT"
 icon = "screen-share"
 description = "Mirror any screen, window, or rectangular region to another display via XDG ScreenCast and layer-shell."
 tags = ["bar", "desktop", "panel", "service", "shortcut", "utility", "video"]
-dependencies = ["python3", "slurp"]
+dependencies = ["portal-screen-mirror"]
 
 [[setting]]
 key = "show_cursor"
@@ -66,16 +66,6 @@ max_height = 580
 placement = "attached"
 position = "auto"
 open_near_click = true
-
-[[layer]]
-id = "display"
-entry = "layer.luau"
-layer = "overlay"
-anchors = ["top", "bottom", "left", "right"]
-exclusive_zone = -1
-keyboard = "none"
-click_through = true
-output = "focused"
 
 [[service]]
 id = "mirror-service"

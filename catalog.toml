@@ -1,7 +1,7 @@
 [[plugin]]
 id = "fumoctl/portal-screen-mirror"
 name = "Portal Screen Mirror"
-version = "1.2.1"
+version = "2.0.0"
 author = "fumoctl"
 license = "MIT"
 icon = "screen-share"
@@ -9,4 +9,4 @@ description = "Mirror any screen, window, or rectangular region to another displ
 deprecated = false
 plugin_api = 50
 tags = ["bar", "desktop", "panel", "service", "shortcut", "utility", "video"]
-dependencies = ["python3", "slurp"]
+dependencies = ["portal-screen-mirror"]
