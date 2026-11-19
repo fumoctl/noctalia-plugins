@@ -11,7 +11,7 @@ Mirror any screen, individual window, or rectangular region onto another display
 | Field | Value |
 | --- | --- |
 | ID | `fumoctl/portal-screen-mirror` |
-| Version | `2.0.0` |
+| Version | `2.0.1` |
 | Entries | Bar widget: `mirror`; panel: `controls`; service: `mirror-service`; shortcut: `toggle` |
 | Dependency | [`portal-screen-mirror`](https://github.com/fumoctl/portal-screen-mirror) |
 
