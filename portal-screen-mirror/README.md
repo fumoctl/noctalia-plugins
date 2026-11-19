@@ -117,6 +117,8 @@ noctalia msg panel-toggle fumoctl/portal-screen-mirror:controls
 | --- | --- | --- | --- |
 | `show_cursor` | `bool` | `true` | Embeds the pointer cursor in newly started `ScreenCast` streams (`cursor_mode = 2`). |
 | `fit` | `select` | `"contain"` | Controls how the stream scales inside the destination output (`contain`, `cover`, or `stretch`). |
+| `max_fps` | `select` | `"60"` | Caps capture and conversion rate on newly started sessions (`"30"`, `"60"`, `"120"`, or `"0"` uncapped). |
+| `scale_quality` | `select` | `"balanced"` | Chooses between bilinear downscaling (`"balanced"`) and low-latency nearest-neighbor (`"fast"`). |
 
 ## IPC
 

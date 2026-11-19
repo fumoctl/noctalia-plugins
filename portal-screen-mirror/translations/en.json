@@ -11,6 +11,20 @@
       "contain": "Contain (letterbox)",
       "cover": "Cover (crop to fill)",
       "stretch": "Stretch"
+    },
+    "max_fps": {
+      "label": "Max frame rate",
+      "description": "Caps mirror capture and conversion rate on newly started sessions.",
+      "fps_30": "30 FPS (Battery saver)",
+      "fps_60": "60 FPS (Smooth video)",
+      "fps_120": "120 FPS (High refresh)",
+      "uncapped": "Uncapped"
+    },
+    "scale_quality": {
+      "label": "Scaling filter",
+      "description": "Balances sharpness against CPU latency when downscaling.",
+      "balanced": "Balanced (Bilinear)",
+      "fast": "Low latency (Nearest)"
     }
   },
   "widget": {

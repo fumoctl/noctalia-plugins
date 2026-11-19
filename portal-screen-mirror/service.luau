@@ -157,6 +157,9 @@ local function buildCompanionCmd(sessionId, destOut, mode)
 	local maxW = math.max(64, math.floor((tonumber(destOut.width) or 1920) * scale + 0.5))
 	local maxH = math.max(64, math.floor((tonumber(destOut.height) or 1080) * scale + 0.5))
 	local cursorMode = noctalia.getConfig("show_cursor") ~= false and 2 or 1
+	local rawMaxFps = tonumber(noctalia.getConfig("max_fps"))
+	local maxFps = (rawMaxFps ~= nil and rawMaxFps >= 0) and math.floor(rawMaxFps) or 60
+	local scaleQuality = noctalia.getConfig("scale_quality") == "fast" and "fast" or "balanced"
 	local outputsJson = noctalia.json.encode(noctalia.outputs() or {}) or "[]"
 
 	return table.concat({
@@ -177,6 +180,10 @@ local function buildCompanionCmd(sessionId, destOut, mode)
 		tostring(maxW),
 		"--max-height",
 		tostring(maxH),
+		"--max-fps",
+		tostring(maxFps),
+		"--scale-quality",
+		shellQuote(scaleQuality),
 		"--outputs-json",
 		shellQuote(outputsJson),
 		"2>/dev/null || printf 'exited:%s\\n' \"$?\"",

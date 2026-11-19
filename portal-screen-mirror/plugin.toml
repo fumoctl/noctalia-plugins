@@ -1,6 +1,6 @@
 id = "fumoctl/portal-screen-mirror"
 name = "Portal Screen Mirror"
-version = "1.0.0"
+version = "1.1.0"
 plugin_api = 50
 author = "fumoctl"
 license = "MIT"
@@ -26,6 +26,30 @@ options = [
   { value = "contain", label_key = "settings.fit.contain" },
   { value = "cover", label_key = "settings.fit.cover" },
   { value = "stretch", label_key = "settings.fit.stretch" },
+]
+
+[[setting]]
+key = "max_fps"
+type = "select"
+label_key = "settings.max_fps.label"
+description_key = "settings.max_fps.description"
+default = "60"
+options = [
+  { value = "30", label_key = "settings.max_fps.fps_30" },
+  { value = "60", label_key = "settings.max_fps.fps_60" },
+  { value = "120", label_key = "settings.max_fps.fps_120" },
+  { value = "0", label_key = "settings.max_fps.uncapped" },
+]
+
+[[setting]]
+key = "scale_quality"
+type = "select"
+label_key = "settings.scale_quality.label"
+description_key = "settings.scale_quality.description"
+default = "balanced"
+options = [
+  { value = "balanced", label_key = "settings.scale_quality.balanced" },
+  { value = "fast", label_key = "settings.scale_quality.fast" },
 ]
 
 [[widget]]

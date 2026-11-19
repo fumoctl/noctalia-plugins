@@ -123,8 +123,155 @@ def pick_region(outputs: list[dict]) -> tuple[dict | None, tuple[int, int, int, 
     return best_out, (rx, ry, rw, rh), False, None
 
 
+class _PyGBoxed(ctypes.Structure):
+    _fields_ = [
+        ("ob_refcnt", ctypes.c_ssize_t),
+        ("ob_type", ctypes.c_void_p),
+        ("boxed", ctypes.c_void_p),
+    ]
+
+
+class _GstFastMem:
+    """Zero-allocation C memory bridge for GstBuffer <-> mmap transfers.
+
+    PyGObject's `GstMapInfo.data` marshals the mapped memory into a freshly allocated
+    Python `bytes` object on every access (~8-16 MiB per frame). Calling `gst_buffer_extract`
+    and `gst_buffer_fill` directly from `libgstreamer-1.0` copies straight between
+    `GstBuffer` memory and `mmap` addresses with zero Python heap allocations.
+    Verified at startup with an 8-byte probe; falls back cleanly to `GstBuffer.map()`.
+    """
+
+    def __init__(self) -> None:
+        self._dll: ctypes.CDLL | None = None
+        self.ready = False
+
+    def init(self) -> None:
+        candidates: list[str | None] = [None, "libgstreamer-1.0.so.0"]
+        lib_name = ctypes.util.find_library("gstreamer-1.0")
+        if lib_name:
+            candidates.append(lib_name)
+        for p in os.environ.get("GI_TYPELIB_PATH", "").split(":"):
+            if p:
+                candidates.append(os.path.join(os.path.dirname(p), "libgstreamer-1.0.so.0"))
+
+        dll = None
+        for cand in candidates:
+            try:
+                d = ctypes.CDLL(cand)
+                _ = d.gst_buffer_extract
+                _ = d.gst_buffer_fill
+                dll = d
+                break
+            except (OSError, AttributeError):
+                continue
+        if dll is None:
+            return
+
+        dll.gst_buffer_extract.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+        ]
+        dll.gst_buffer_extract.restype = ctypes.c_size_t
+        dll.gst_buffer_fill.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+        ]
+        dll.gst_buffer_fill.restype = ctypes.c_size_t
+
+        try:
+            probe = Gst.Buffer.new_wrapped(b"NCTLPROB")
+            bptr = _PyGBoxed.from_address(id(probe)).boxed
+            scratch = (ctypes.c_char * 8)()
+            if bptr and dll.gst_buffer_extract(bptr, 0, scratch, 8) == 8 and bytes(scratch) == b"NCTLPROB":
+                self._dll = dll
+                self.ready = True
+        except Exception:
+            self.ready = False
+
+    def extract_to_slot(self, buf: Gst.Buffer, dst_addr: int, dst_mm: mmap.mmap, nbytes: int) -> bool:
+        if self.ready and self._dll is not None and dst_addr:
+            bptr = _PyGBoxed.from_address(id(buf)).boxed
+            if bptr and self._dll.gst_buffer_extract(bptr, 0, dst_addr, nbytes) == nbytes:
+                return True
+        ok_map, mapinfo = buf.map(Gst.MapFlags.READ)
+        if not ok_map:
+            return False
+        try:
+            if mapinfo.size < nbytes:
+                return False
+            dst_mm[:nbytes] = memoryview(mapinfo.data)[:nbytes]
+            return True
+        finally:
+            buf.unmap(mapinfo)
+
+    def alloc_from_shm(
+        self, src_addr: int, src_mm: mmap.mmap, width: int, height: int, stride: int
+    ) -> Gst.Buffer | None:
+        row_bytes = width * 4
+        total = row_bytes * height
+        if self.ready and self._dll is not None and src_addr:
+            buf = Gst.Buffer.new_allocate(None, total, None)
+            if buf is not None:
+                bptr = _PyGBoxed.from_address(id(buf)).boxed
+                if bptr:
+                    if stride == row_bytes:
+                        if self._dll.gst_buffer_fill(bptr, 0, src_addr, total) == total:
+                            return buf
+                    else:
+                        ok_all = True
+                        for y in range(height):
+                            if (
+                                self._dll.gst_buffer_fill(
+                                    bptr, y * row_bytes, src_addr + y * stride, row_bytes
+                                )
+                                != row_bytes
+                            ):
+                                ok_all = False
+                                break
+                        if ok_all:
+                            return buf
+        if stride == row_bytes:
+            payload = bytes(memoryview(src_mm)[:total])
+        else:
+            mv = memoryview(src_mm)
+            payload = b"".join(bytes(mv[y * stride : y * stride + row_bytes]) for y in range(height))
+        return Gst.Buffer.new_wrapped(payload)
+
+
+_GST_MEM = _GstFastMem()
+
+
+def _mmap_base_addr(mm: mmap.mmap) -> int:
+    c_buf = ctypes.c_char.from_buffer(mm)
+    addr = ctypes.addressof(c_buf)
+    del c_buf
+    return addr
+
+
+def build_convert_scale_chain(max_w: int, max_h: int, scale_method: int) -> str:
+    """Build a single-pass multi-threaded SIMD convert+scale stage (with <1.20 fallback)."""
+    threads = min(4, max(1, os.cpu_count() or 2))
+    caps_tail = f"video/x-raw,format=RGBA,width=[1,{max_w}],height=[1,{max_h}],pixel-aspect-ratio=1/1"
+    if Gst.ElementFactory.find("videoconvertscale") is not None:
+        return f"videoconvertscale n-threads={threads} method={scale_method} dither=0 ! {caps_tail}"
+    return f"videoscale method={scale_method} dither=0 ! videoconvert n-threads={threads} dither=0 ! {caps_tail}"
+
+
 class PixelStreamServer:
-    """Double-buffered sealed memfd SOCK_SEQPACKET server for Noctalia's ui.pixelStream."""
+    """Triple-buffered sealed memfd SOCK_SEQPACKET server for Noctalia's ui.pixelStream.
+
+    Uses 3 memfd slots (within Noctalia's `kMaxBuffers = 4`):
+      - `in_flight_slot`: currently owned by Noctalia between `FRAME` and `REQUEST`
+      - `ready_slot`: most recently completed frame awaiting Noctalia's `REQUEST`
+      - free slot: written directly from `GstBuffer` on GStreamer's streaming thread
+    This eliminates per-frame Python heap allocations and main-thread `memcpy` passes.
+    """
+
+    NUM_SLOTS = 3
 
     def __init__(self, socket_path: str) -> None:
         self.socket_path = socket_path
@@ -132,12 +279,20 @@ class PixelStreamServer:
         self.client_sock: socket.socket | None = None
         self.srv_watch = 0
         self.client_watch = 0
-        self.slots: list[dict | None] = [None, None]
-        self.next_slot = 0
+        self.slots: list[dict | None] = [None] * self.NUM_SLOTS
         self.slot_gen = 0
         self.frame_lock = threading.Lock()
-        self.latest = {"seq": 0, "w": 0, "h": 0, "data": None, "idle_scheduled": False}
-        self.conn_state = {"hello": False, "requested": False, "attached_gen": [-1, -1], "last_seq": 0}
+        self.in_flight_slot = -1
+        self.ready_slot = -1
+        self.writing_slot = -1
+        self.ready_seq = 0
+        self.idle_scheduled = False
+        self.conn_state = {
+            "hello": False,
+            "requested": False,
+            "attached_gen": [-1] * self.NUM_SLOTS,
+            "last_seq": 0,
+        }
         self.ready_emitted = False
 
     def start(self) -> None:
@@ -157,18 +312,6 @@ class PixelStreamServer:
             self._on_accept,
         )
 
-    def submit_rgba(self, w: int, h: int, raw: bytes) -> None:
-        with self.frame_lock:
-            self.latest["seq"] += 1
-            self.latest["w"] = w
-            self.latest["h"] = h
-            self.latest["data"] = raw
-            need_sched = not self.latest["idle_scheduled"]
-            if need_sched:
-                self.latest["idle_scheduled"] = True
-        if need_sched:
-            GLib.idle_add(self._deliver_if_ready)
-
     def attach_appsink(self, sink_elem: Gst.Element) -> None:
         def on_new_sample(sink: Gst.Element) -> Gst.FlowReturn:
             sample = sink.emit("pull-sample")
@@ -184,36 +327,58 @@ class PixelStreamServer:
             if not (ok_w and ok_h) or w <= 0 or h <= 0 or w * h > MAX_PIXELS:
                 return Gst.FlowReturn.OK
             expected = w * h * 4
-            ok_map, mapinfo = buf.map(Gst.MapFlags.READ)
-            if not ok_map:
+            if buf.get_size() < expected:
                 return Gst.FlowReturn.OK
-            try:
-                if mapinfo.size < expected:
+
+            with self.frame_lock:
+                write_idx = -1
+                for idx in range(self.NUM_SLOTS):
+                    if idx != self.in_flight_slot and idx != self.ready_slot and idx != self.writing_slot:
+                        write_idx = idx
+                        break
+                if write_idx < 0:
                     return Gst.FlowReturn.OK
-                raw = bytes(memoryview(mapinfo.data)[:expected])
-            finally:
-                buf.unmap(mapinfo)
-            self.submit_rgba(w, h, raw)
+                try:
+                    slot = self._ensure_slot_locked(write_idx, w, h)
+                except OSError:
+                    return Gst.FlowReturn.OK
+                self.writing_slot = write_idx
+
+            ok_copy = _GST_MEM.extract_to_slot(buf, slot["addr"], slot["mm"], expected)
+
+            with self.frame_lock:
+                self.writing_slot = -1
+                if not ok_copy:
+                    return Gst.FlowReturn.OK
+                self.ready_slot = write_idx
+                self.ready_seq += 1
+                need_sched = not self.idle_scheduled
+                if need_sched:
+                    self.idle_scheduled = True
+
+            if need_sched:
+                GLib.idle_add(self._deliver_if_ready)
             return Gst.FlowReturn.OK
 
         sink_elem.connect("new-sample", on_new_sample)
 
-    def _ensure_slot(self, idx: int, w: int, h: int) -> dict:
+    def _ensure_slot_locked(self, idx: int, w: int, h: int) -> dict:
         cur = self.slots[idx]
         if cur is not None and cur["dims"] == (w, h):
             return cur
-        self._free_slot(idx)
+        self._free_slot_locked(idx)
         byte_len = w * h * 4
         fd = os.memfd_create(f"noctalia-mirror-{idx}", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
         os.ftruncate(fd, byte_len)
         fcntl.fcntl(fd, fcntl.F_ADD_SEALS, fcntl.F_SEAL_SHRINK)
         mm = mmap.mmap(fd, byte_len, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+        addr = _mmap_base_addr(mm)
         self.slot_gen += 1
-        entry = {"fd": fd, "mm": mm, "dims": (w, h), "gen": self.slot_gen}
+        entry = {"fd": fd, "mm": mm, "addr": addr, "dims": (w, h), "gen": self.slot_gen}
         self.slots[idx] = entry
         return entry
 
-    def _free_slot(self, idx: int) -> None:
+    def _free_slot_locked(self, idx: int) -> None:
         slot = self.slots[idx]
         self.slots[idx] = None
         if slot is not None:
@@ -227,37 +392,40 @@ class PixelStreamServer:
                 pass
 
     def _deliver_if_ready(self) -> bool:
+        send_idx = -1
+        slot = None
         with self.frame_lock:
-            self.latest["idle_scheduled"] = False
-            seq_val = self.latest["seq"]
-            w = self.latest["w"]
-            h = self.latest["h"]
-            data = self.latest["data"]
+            self.idle_scheduled = False
+            has_first = self.ready_seq > 0
+            if (
+                self.client_sock is not None
+                and self.conn_state["requested"]
+                and self.ready_slot >= 0
+                and self.ready_seq > self.conn_state["last_seq"]
+            ):
+                send_idx = self.ready_slot
+                slot = self.slots[send_idx]
+                if slot is not None:
+                    self.in_flight_slot = send_idx
+                    self.conn_state["requested"] = False
+                    self.conn_state["last_seq"] = self.ready_seq
 
-        if data is not None and not self.ready_emitted:
+        if has_first and not self.ready_emitted:
             self.ready_emitted = True
             emit("ready")
 
-        if self.client_sock is None or not self.conn_state["requested"] or data is None or seq_val <= self.conn_state["last_seq"]:
-            return GLib.SOURCE_REMOVE
-
-        slot_idx = self.next_slot
-        self.next_slot = 1 - self.next_slot
-        try:
-            slot = self._ensure_slot(slot_idx, w, h)
-            slot["mm"].seek(0)
-            slot["mm"].write(data)
-            if self.conn_state["attached_gen"][slot_idx] != slot["gen"]:
-                self.client_sock.sendmsg(
-                    [struct.pack("<IIII", BUFFER_MSG, slot_idx, w, h)],
-                    [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [slot["fd"]]))],
-                )
-                self.conn_state["attached_gen"][slot_idx] = slot["gen"]
-            self.client_sock.send(struct.pack("<II", FRAME_MSG, slot_idx))
-            self.conn_state["requested"] = False
-            self.conn_state["last_seq"] = seq_val
-        except OSError:
-            self.close_client()
+        if slot is not None and send_idx >= 0 and self.client_sock is not None:
+            w, h = slot["dims"]
+            try:
+                if self.conn_state["attached_gen"][send_idx] != slot["gen"]:
+                    self.client_sock.sendmsg(
+                        [struct.pack("<IIII", BUFFER_MSG, send_idx, w, h)],
+                        [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [slot["fd"]]))],
+                    )
+                    self.conn_state["attached_gen"][send_idx] = slot["gen"]
+                self.client_sock.send(struct.pack("<II", FRAME_MSG, send_idx))
+            except OSError:
+                self.close_client()
         return GLib.SOURCE_REMOVE
 
     def _on_client_io(self, _fd: int, cond: GLib.IOCondition) -> bool:
@@ -284,7 +452,9 @@ class PixelStreamServer:
                     return GLib.SOURCE_REMOVE
                 self.conn_state["hello"] = True
             elif msg_type == REQUEST_MSG and self.conn_state["hello"]:
-                self.conn_state["requested"] = True
+                with self.frame_lock:
+                    self.in_flight_slot = -1
+                    self.conn_state["requested"] = True
                 self._deliver_if_ready()
             else:
                 self.close_client()
@@ -301,7 +471,14 @@ class PixelStreamServer:
         self.close_client()
         conn.setblocking(False)
         self.client_sock = conn
-        self.conn_state = {"hello": False, "requested": False, "attached_gen": [-1, -1], "last_seq": 0}
+        with self.frame_lock:
+            self.in_flight_slot = -1
+            self.conn_state = {
+                "hello": False,
+                "requested": False,
+                "attached_gen": [-1] * self.NUM_SLOTS,
+                "last_seq": 0,
+            }
         self.client_watch = GLib.io_add_watch(
             conn.fileno(),
             GLib.PRIORITY_DEFAULT,
@@ -320,6 +497,9 @@ class PixelStreamServer:
             except OSError:
                 pass
             self.client_sock = None
+        with self.frame_lock:
+            self.in_flight_slot = -1
+            self.conn_state["requested"] = False
 
     def close(self) -> None:
         self.close_client()
@@ -336,8 +516,9 @@ class PixelStreamServer:
             os.unlink(self.socket_path)
         except OSError:
             pass
-        self._free_slot(0)
-        self._free_slot(1)
+        with self.frame_lock:
+            for idx in range(self.NUM_SLOTS):
+                self._free_slot_locked(idx)
 
 
 class _WlMessage(ctypes.Structure):
@@ -370,6 +551,8 @@ def try_run_wlr_screencopy_region(
     cursor_mode: int,
     max_w: int,
     max_h: int,
+    max_fps: int,
+    scale_method: int,
     should_continue,
 ) -> tuple[bool, int]:
     """Capture an output sub-rectangle directly via zwlr_screencopy_manager_v1 (no portal picker).
@@ -671,12 +854,11 @@ def try_run_wlr_screencopy_region(
         main_loop = GLib.MainLoop()
         stream_srv.start()
 
+        convert_scale = build_convert_scale_chain(max_w, max_h, scale_method)
         pipeline = Gst.parse_launch(
             "appsrc name=src is-live=true do-timestamp=true format=time max-buffers=1 leaky-type=downstream "
+            f"! {convert_scale} "
             "! videoflip name=flip "
-            "! videoconvert ! video/x-raw,format=RGBx,pixel-aspect-ratio=1/1 "
-            "! videoscale ! videoconvert "
-            f"! video/x-raw,format=RGBA,width=[1,{max_w}],height=[1,{max_h}],pixel-aspect-ratio=1/1 "
             "! appsink name=sink max-buffers=1 drop=true emit-signals=true sync=false"
         )
         appsrc = pipeline.get_by_name("src")
@@ -707,7 +889,9 @@ def try_run_wlr_screencopy_region(
             "last_caps_key": None,
             "flipped": False,
             "failed_streak": 0,
+            "last_ready_ns": 0,
         }
+        target_period_ns = int(1_000_000_000 / max_fps) if max_fps > 0 else 0
 
         F_BUF = ctypes.CFUNCTYPE(
             None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32
@@ -755,7 +939,19 @@ def try_run_wlr_screencopy_region(
                 ctypes.c_int32(stride),
                 ctypes.c_uint32(fmt),
             )
-            slot = {"fmt": fmt, "w": w, "h": h, "stride": stride, "size": size, "fd": fd, "mm": mm, "pool": pool, "buf": buf}
+            addr = _mmap_base_addr(mm)
+            slot = {
+                "fmt": fmt,
+                "w": w,
+                "h": h,
+                "stride": stride,
+                "size": size,
+                "fd": fd,
+                "mm": mm,
+                "addr": addr,
+                "pool": pool,
+                "buf": buf,
+            }
             wl_state["shm_slot"] = slot
             return slot
 
@@ -770,7 +966,10 @@ def try_run_wlr_screencopy_region(
                 request_capture_frame()
                 return GLib.SOURCE_REMOVE
 
-            pace_timer = GLib.timeout_add(delay_ms, _fire)
+            if delay_ms <= 0:
+                pace_timer = GLib.idle_add(_fire)
+            else:
+                pace_timer = GLib.timeout_add(delay_ms, _fire)
 
         def on_f_buf(_d, fr, fmt, w, h, stride):
             if int(fmt) not in SHM_FORMAT_MAP or w == 0 or h == 0 or stride < w * 4:
@@ -824,16 +1023,21 @@ def try_run_wlr_screencopy_region(
                 appsrc.set_property("caps", caps)
                 cap_ctx["last_caps_key"] = caps_key
 
-            row_bytes = w * 4
-            mm = slot["mm"]
-            if stride == row_bytes:
-                payload = bytes(memoryview(mm)[: row_bytes * h])
-            else:
-                mv = memoryview(mm)
-                payload = b"".join(bytes(mv[y * stride : y * stride + row_bytes]) for y in range(h))
+            gst_buf = _GST_MEM.alloc_from_shm(slot["addr"], slot["mm"], w, h, stride)
+            if gst_buf is not None:
+                appsrc.emit("push-buffer", gst_buf)
 
-            appsrc.emit("push-buffer", Gst.Buffer.new_wrapped(payload))
-            schedule_next_frame(16)
+            now_ns = time.monotonic_ns()
+            if target_period_ns <= 0:
+                delay_ms = 0
+            elif cap_ctx["last_ready_ns"] == 0:
+                delay_ms = max(1, target_period_ns // 1_000_000)
+            else:
+                elapsed_ns = now_ns - cap_ctx["last_ready_ns"]
+                rem_ns = target_period_ns - elapsed_ns
+                delay_ms = 0 if rem_ns <= 500_000 else int((rem_ns + 500_000) // 1_000_000)
+            cap_ctx["last_ready_ns"] = now_ns
+            schedule_next_frame(delay_ms)
 
         def on_f_fail(_d, _fr):
             destroy_active_frame()
@@ -988,6 +1192,8 @@ def main() -> int:
     parser.add_argument("--cursor-mode", type=int, default=2)
     parser.add_argument("--max-width", type=int, default=1920)
     parser.add_argument("--max-height", type=int, default=1080)
+    parser.add_argument("--max-fps", type=int, default=60)
+    parser.add_argument("--scale-quality", choices=["balanced", "fast"], default="balanced")
     parser.add_argument("--outputs-json", default="[]")
     args = parser.parse_args()
 
@@ -1023,8 +1229,11 @@ def main() -> int:
 
     GLib.set_prgname("dev.noctalia.ScreenMirrorCompanion")
     Gst.init(None)
+    _GST_MEM.init()
 
     max_w, max_h = clamp_max_dims(args.max_width, args.max_height)
+    max_fps = max(0, int(args.max_fps))
+    scale_method = 0 if args.scale_quality == "fast" else 1
     stream_srv = PixelStreamServer(args.socket)
 
     try:
@@ -1039,6 +1248,8 @@ def main() -> int:
                 args.cursor_mode,
                 max_w,
                 max_h,
+                max_fps,
+                scale_method,
                 should_continue,
             )
             if supported:
@@ -1277,25 +1488,41 @@ def main() -> int:
             # Negotiate PipeWire MemFd SHM (`video/x-raw`) to avoid multi-plane DCC DMA-BUF
             # modifier mismatches, stamp `pixel-aspect-ratio=1/1` via `capssetter` (since
             # `pipewiresrc` omits PAR, which otherwise overflows `videoscale` size fixation),
-            # and output packed RGBA8 bounded to destination resolution for PixelStream.
+            # and output packed RGBA8 bounded to destination resolution via single-pass
+            # multi-threaded `videoconvertscale`.
             # Keep `on-disconnect=none` AND disable `do-timestamp`/`provide-clock`/`use-bufferpool`:
             # during animated tiled-window resizes, PipeWire repeatedly removes old buffers and
             # pushes `FLUSH_STOP(reset_time=TRUE)`; leaving `do-timestamp=true` or `provide-clock=true`
             # accumulates running-time skew across flushes and stalls buffer return by seconds.
+            crop_stage = "! videocrop name=crop " if crop_fractions is not None else ""
+            convert_scale = build_convert_scale_chain(max_w, max_h, scale_method)
             pipeline = Gst.parse_launch(
                 "pipewiresrc name=src always-copy=true do-timestamp=false use-bufferpool=false provide-clock=false "
                 "! video/x-raw,format={BGRx,BGRA,RGBx,RGBA} "
-                "! queue max-size-buffers=1 leaky=downstream "
-                "! videocrop name=crop "
+                "! queue name=q max-size-buffers=1 leaky=downstream "
+                f"{crop_stage}"
                 "! capssetter join=true replace=false caps=\"video/x-raw,pixel-aspect-ratio=1/1\" "
-                "! videoconvert ! video/x-raw,format=RGBx,pixel-aspect-ratio=1/1 "
-                "! videoscale ! videoconvert "
-                f"! video/x-raw,format=RGBA,width=[1,{max_w}],height=[1,{max_h}],pixel-aspect-ratio=1/1 "
+                f"! {convert_scale} "
                 "! appsink name=sink max-buffers=1 drop=true emit-signals=true sync=false"
             )
             src_elem = pipeline.get_by_name("src")
             src_elem.set_property("fd", pw_fd)
             src_elem.set_property("path", str(node_id))
+
+            if max_fps > 0:
+                min_interval_ns = int(0.90 * 1_000_000_000 / max_fps)
+                last_gate_ns = [0]
+
+                def on_rate_gate(_pad, _info):
+                    now = time.monotonic_ns()
+                    if now - last_gate_ns[0] < min_interval_ns:
+                        return Gst.PadProbeReturn.DROP
+                    last_gate_ns[0] = now
+                    return Gst.PadProbeReturn.OK
+
+                pipeline.get_by_name("q").get_static_pad("src").add_probe(
+                    Gst.PadProbeType.BUFFER, on_rate_gate
+                )
 
             if crop_fractions is not None:
                 fx0, fy0, fx1, fy1 = crop_fractions
