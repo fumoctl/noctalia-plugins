@@ -31,15 +31,72 @@ Install the runtime packages below along with your compositor's `xdg-desktop-por
 | **Debian / Ubuntu / Pop!_OS** | `sudo apt install python3 python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pipewire slurp libwayland-client0 pipewire xdg-desktop-portal` |
 | **openSUSE Tumbleweed / Slowroll** | `sudo zypper install python3 python3-gobject typelib-1_0-Gst-1_0 gstreamer gstreamer-plugins-base gstreamer-plugins-good gstreamer-plugin-pipewire slurp libwayland-client0 pipewire xdg-desktop-portal` |
 | **Void Linux** | `sudo xbps-install -S python3 python3-gobject gstreamer1 gst-plugins-base1 gst-plugins-good1 gstreamer1-pipewire slurp wayland pipewire xdg-desktop-portal` |
-| **NixOS (Home Manager)** | Expose `pygobject3`, `slurp`, `GI_TYPELIB_PATH`, `GST_PLUGIN_SYSTEM_PATH_1_0`, and `wayland` to `noctalia.service` — see [portal-screen-mirror/README.md](portal-screen-mirror/README.md#packages-by-distribution) for a copy-paste module snippet. |
+| **NixOS (Home Manager)** | Expose `screenMirrorPyEnv`, `slurp`, `GI_TYPELIB_PATH`, `GST_PLUGIN_SYSTEM_PATH_1_0`, and `wayland` to `noctalia.service` — see below or [portal-screen-mirror/README.md](portal-screen-mirror/README.md#packages-by-distribution). |
 
 ## Using as a Noctalia Git Source
+
+### Standard Linux Distributions (CLI / GUI)
 
 Once the dependencies above are installed, add the source and enable the plugin:
 
 ```sh
 noctalia msg plugins source add fumoctl git https://github.com/fumoctl/noctalia-plugins
 noctalia msg plugins enable fumoctl/portal-screen-mirror
+```
+
+### NixOS (Declarative Home Manager)
+
+Add the runtime environment and `plugins.source` entry to your Home Manager module, then rebuild (`nixos-rebuild switch` / `nh os switch`):
+
+```nix
+{ lib, pkgs, ... }:
+let
+  screenMirrorPyEnv = pkgs.python3.withPackages (ps: [ ps.pygobject3 ]);
+  screenMirrorTypelibPath = lib.makeSearchPath "lib/girepository-1.0" [
+    pkgs.glib.out
+    pkgs.gst_all_1.gstreamer.out
+  ];
+  screenMirrorGstPluginPath = lib.makeSearchPath "lib/gstreamer-1.0" [
+    pkgs.pipewire
+    pkgs.gst_all_1.gstreamer.out
+    pkgs.gst_all_1.gst-plugins-base
+    pkgs.gst_all_1.gst-plugins-good
+  ];
+in
+{
+  home.packages = [
+    screenMirrorPyEnv
+    pkgs.slurp
+  ];
+
+  systemd.user.services.noctalia.Service.Environment = [
+    "GI_TYPELIB_PATH=${screenMirrorTypelibPath}"
+    "GST_PLUGIN_SYSTEM_PATH_1_0=${screenMirrorGstPluginPath}"
+    "LD_LIBRARY_PATH=${lib.makeLibraryPath [ pkgs.wayland ]}"
+  ];
+
+  programs.noctalia.settings.plugins = {
+    auto_update = "all";
+    enabled = [ "fumoctl/portal-screen-mirror" ];
+    source = [
+      {
+        name = "official";
+        kind = "git";
+        location = "https://github.com/noctalia-dev/official-plugins";
+      }
+      {
+        name = "community";
+        kind = "git";
+        location = "https://github.com/noctalia-dev/community-plugins";
+      }
+      {
+        name = "fumoctl";
+        kind = "git";
+        location = "https://github.com/fumoctl/noctalia-plugins";
+      }
+    ];
+  };
+}
 ```
 
 ## Opening a PR to `noctalia-dev/community-plugins`

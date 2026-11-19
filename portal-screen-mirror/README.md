@@ -66,17 +66,17 @@ sudo xbps-install -S python3 python3-gobject gstreamer1 gst-plugins-base1 gst-pl
 
 **NixOS (Home Manager)**
 
-On NixOS, GObject Introspection typelibs, GStreamer plugins, and `libwayland-client.so.0` live in isolated `/nix/store` paths, so expose them to `noctalia.service`:
+On NixOS, GObject Introspection typelibs, GStreamer plugins, and `libwayland-client.so.0` live in isolated `/nix/store` paths. Expose them to `noctalia.service` and register the plugin source declaratively in `programs.noctalia.settings` (then rebuild your Home Manager / NixOS configuration):
 
 ```nix
 { lib, pkgs, ... }:
 let
-  pyEnv = pkgs.python3.withPackages (ps: [ ps.pygobject3 ]);
-  typelibPath = lib.makeSearchPath "lib/girepository-1.0" [
+  screenMirrorPyEnv = pkgs.python3.withPackages (ps: [ ps.pygobject3 ]);
+  screenMirrorTypelibPath = lib.makeSearchPath "lib/girepository-1.0" [
     pkgs.glib.out
     pkgs.gst_all_1.gstreamer.out
   ];
-  gstPluginPath = lib.makeSearchPath "lib/gstreamer-1.0" [
+  screenMirrorGstPluginPath = lib.makeSearchPath "lib/gstreamer-1.0" [
     pkgs.pipewire
     pkgs.gst_all_1.gstreamer.out
     pkgs.gst_all_1.gst-plugins-base
@@ -84,15 +84,42 @@ let
   ];
 in
 {
-  home.packages = [ pyEnv pkgs.slurp ];
+  home.packages = [
+    screenMirrorPyEnv
+    pkgs.slurp
+  ];
 
   systemd.user.services.noctalia.Service.Environment = [
-    "GI_TYPELIB_PATH=${typelibPath}"
-    "GST_PLUGIN_SYSTEM_PATH_1_0=${gstPluginPath}"
+    "GI_TYPELIB_PATH=${screenMirrorTypelibPath}"
+    "GST_PLUGIN_SYSTEM_PATH_1_0=${screenMirrorGstPluginPath}"
     "LD_LIBRARY_PATH=${lib.makeLibraryPath [ pkgs.wayland ]}"
   ];
+
+  programs.noctalia.settings.plugins = {
+    auto_update = "all";
+    enabled = [ "fumoctl/portal-screen-mirror" ];
+    source = [
+      {
+        name = "official";
+        kind = "git";
+        location = "https://github.com/noctalia-dev/official-plugins";
+      }
+      {
+        name = "community";
+        kind = "git";
+        location = "https://github.com/noctalia-dev/community-plugins";
+      }
+      {
+        name = "fumoctl";
+        kind = "git";
+        location = "https://github.com/fumoctl/noctalia-plugins";
+      }
+    ];
+  };
 }
 ```
+
+If you install from Noctalia's built-in `community` store (or manage Noctalia via the GUI instead of `programs.noctalia.settings`), you only need the `home.packages` and `systemd.user.services.noctalia.Service.Environment` parts above, then enable `fumoctl/portal-screen-mirror` in **Settings → Plugins** (or via `noctalia msg`).
 
 ## Usage
 
