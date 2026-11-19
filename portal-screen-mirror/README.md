@@ -11,7 +11,7 @@ Mirror any screen, individual window, or rectangular region onto another display
 | Field | Value |
 | --- | --- |
 | ID | `fumoctl/portal-screen-mirror` |
-| Version | `2.0.3` |
+| Version | `2.0.4` |
 | Entries | Bar widget: `mirror`; panel: `controls`; service: `mirror-service`; shortcut: `toggle` |
 | Dependency | [`portal-screen-mirror`](https://github.com/fumoctl/portal-screen-mirror) |
 
@@ -71,7 +71,15 @@ inputs.portal-screen-mirror.url = "github:fumoctl/portal-screen-mirror";
 }
 ```
 
-### Arch / Fedora / Debian / Ubuntu (Cargo)
+### AppImage / `.deb` / `.rpm` (Any Distro)
+
+Download the latest release from [GitHub Releases](https://github.com/fumoctl/portal-screen-mirror/releases):
+
+- **AppImage**: Drop `portal-screen-mirror-x86_64.AppImage` (`chmod +x`) into `~/AppImages` (Gear Lever), `~/Applications` (AppImageLauncher), `~/.local/bin`, or `~/Downloads` — the plugin discovers and launches it automatically!
+- **Debian / Ubuntu**: `sudo apt install ./portal-screen-mirror_*_amd64.deb`
+- **Fedora / openSUSE**: `sudo dnf install ./portal-screen-mirror-*.x86_64.rpm`
+
+### Arch / Fedora / Debian / Ubuntu (Cargo from Source)
 
 ```sh
 # Arch Linux
@@ -87,7 +95,7 @@ sudo apt install cargo rustc pkg-config libpipewire-0.3-dev libwayland-dev libxk
 cargo install --git https://github.com/fumoctl/portal-screen-mirror
 ```
 
-*(The plugin automatically checks `PATH`, `${CARGO_HOME:-~/.cargo}/bin`, and `~/.local/bin` — no extra `PATH` setup needed after `cargo install`.)*
+*(The plugin automatically checks `PATH`, `${CARGO_HOME:-~/.cargo}/bin`, `~/.local/bin`, `~/bin`, `~/AppImages`, `~/Applications`, `~/.AppImages`, Zap/AM dirs, and `~/Downloads`.)*
 
 ## Usage
 

@@ -19,11 +19,28 @@ local function isBinaryAvailable()
 	local dataDir = noctalia.pluginDataDir() or ""
 	local home = string.match(dataDir, "^(.-)/%.local/") or string.match(dataDir, "^(/home/[^/]+)")
 	if type(home) == "string" and home ~= "" then
-		if
-			noctalia.commandExists(home .. "/.cargo/bin/portal-screen-mirror")
-			or noctalia.commandExists(home .. "/.local/bin/portal-screen-mirror")
-		then
-			return true
+		local exactCandidates = {
+			home .. "/.cargo/bin/portal-screen-mirror",
+			home .. "/.local/bin/portal-screen-mirror",
+			home .. "/bin/portal-screen-mirror",
+			"/opt/portal-screen-mirror/portal-screen-mirror",
+		}
+		local appDirs = { "/AppImages", "/.AppImages", "/.Appimages", "/Appimages", "/Applications" }
+		local appNames = {
+			"portal_screen_mirror.appimage",
+			"portal-screen-mirror.appimage",
+			"portal-screen-mirror-x86_64.AppImage",
+			"portal-screen-mirror-aarch64.AppImage",
+		}
+		for _, dir in ipairs(appDirs) do
+			for _, fname in ipairs(appNames) do
+				table.insert(exactCandidates, home .. dir .. "/" .. fname)
+			end
+		end
+		for _, cand in ipairs(exactCandidates) do
+			if noctalia.commandExists(cand) then
+				return true
+			end
 		end
 	end
 	return false

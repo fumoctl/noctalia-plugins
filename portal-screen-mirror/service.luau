@@ -46,13 +46,28 @@ local function resolveBinarySync()
 	end
 	local home = detectHomeDir()
 	if type(home) == "string" and home ~= "" then
-		local cargoCand = home .. "/.cargo/bin/portal-screen-mirror"
-		if noctalia.commandExists(cargoCand) then
-			return cargoCand
+		local exactCandidates = {
+			home .. "/.cargo/bin/portal-screen-mirror",
+			home .. "/.local/bin/portal-screen-mirror",
+			home .. "/bin/portal-screen-mirror",
+			"/opt/portal-screen-mirror/portal-screen-mirror",
+		}
+		local appDirs = { "/AppImages", "/.AppImages", "/.Appimages", "/Appimages", "/Applications" }
+		local appNames = {
+			"portal_screen_mirror.appimage",
+			"portal-screen-mirror.appimage",
+			"portal-screen-mirror-x86_64.AppImage",
+			"portal-screen-mirror-aarch64.AppImage",
+		}
+		for _, dir in ipairs(appDirs) do
+			for _, fname in ipairs(appNames) do
+				table.insert(exactCandidates, home .. dir .. "/" .. fname)
+			end
 		end
-		local localCand = home .. "/.local/bin/portal-screen-mirror"
-		if noctalia.commandExists(localCand) then
-			return localCand
+		for _, cand in ipairs(exactCandidates) do
+			if noctalia.commandExists(cand) then
+				return cand
+			end
 		end
 	end
 	return nil
@@ -185,8 +200,41 @@ local function probeBinary(thenStart)
 	probingBinary = true
 
 	local probeCmd = table.concat({
-		[=[for cand in "$(command -v portal-screen-mirror 2>/dev/null)" "${CARGO_HOME:-$HOME/.cargo}/bin/portal-screen-mirror" "$HOME/.local/bin/portal-screen-mirror"; do]=],
-		[=[  if [ -n "$cand" ] && [ -x "$cand" ]; then printf 'found:%s\n' "$cand"; exit 0; fi]=],
+		[=[for cand in \]=],
+		[=[  "$(command -v portal-screen-mirror 2>/dev/null)" \]=],
+		[=[  "${CARGO_HOME:-$HOME/.cargo}/bin/portal-screen-mirror" \]=],
+		[=[  "$HOME/.local/bin/portal-screen-mirror" \]=],
+		[=[  "$HOME/bin/portal-screen-mirror" \]=],
+		[=[  "/opt/portal-screen-mirror/portal-screen-mirror"; do]=],
+		[=[  if [ -n "$cand" ] && [ -f "$cand" ] && [ -x "$cand" ]; then printf 'found:%s\n' "$cand"; exit 0; fi]=],
+		[=[done]=],
+		[=[DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"]=],
+		[=[for dir in \]=],
+		[=[  "$HOME/.AppImages" \]=],
+		[=[  "$HOME/.Appimages" \]=],
+		[=[  "$HOME/AppImages" \]=],
+		[=[  "$HOME/Appimages" \]=],
+		[=[  "$HOME/Applications" \]=],
+		[=[  "$HOME/.local/bin" \]=],
+		[=[  "$HOME/bin" \]=],
+		[=[  "$DATA_HOME/AppImages" \]=],
+		[=[  "$DATA_HOME/zap/v2" \]=],
+		[=[  "$DATA_HOME/AM" \]=],
+		[=[  "$HOME/Downloads" \]=],
+		[=[  "/Applications" \]=],
+		[=[  "/opt/AppImages"; do]=],
+		[=[  [ -d "$dir" ] || continue]=],
+		[=[  BEST=""]=],
+		[=[  for f in "$dir"/* "$dir"/*/*; do]=],
+		[=[    [ -f "$f" ] && [ -x "$f" ] || continue]=],
+		[=[    base=$(basename "$f" | tr '[:upper:]' '[:lower:]')]=],
+		[=[    case "$base" in]=],
+		[=[      portal-screen-mirror|portal_screen_mirror|portal[-_]screen[-_]mirror*.appimage|portal*screen*mirror*.appimage)]=],
+		[=[        if [ -z "$BEST" ] || [ "$f" -nt "$BEST" ]; then BEST="$f"; fi]=],
+		[=[        ;;]=],
+		[=[    esac]=],
+		[=[  done]=],
+		[=[  if [ -n "$BEST" ]; then printf 'found:%s\n' "$BEST"; exit 0; fi]=],
 		[=[done]=],
 		[=[printf 'missing\n']=],
 	}, "\n")
@@ -339,8 +387,10 @@ local function buildDaemonCmd(binPath, destName, mode)
 		"CFG=" .. shellQuote(liveFile),
 		"ERR=" .. shellQuote(errFile),
 		"OWNER=$PPID",
+		[=[if [ -n "${XDG_RUNTIME_DIR:-}" ]; then SOCK="$XDG_RUNTIME_DIR/portal-screen-mirror.sock"; else SOCK="/tmp/portal-screen-mirror-$(id -u).sock"; fi]=],
+		[=[case "$BIN" in *.[Aa][Pp][Pp][Ii][Mm][Aa][Gg][Ee]) if [ ! -c /dev/fuse ] || [ ! -r /dev/fuse ]; then export APPIMAGE_EXTRACT_AND_RUN=1; fi ;; esac]=],
 		': > "$ERR"',
-		'"$BIN" stop >/dev/null 2>&1 || true',
+		'if [ -S "$SOCK" ]; then "$BIN" stop >/dev/null 2>&1 || true; fi',
 		launchCmd,
 		"PID=$!",
 		[=[trap '"$BIN" stop >/dev/null 2>&1 || true; kill -TERM "$PID" 2>/dev/null || true' HUP INT TERM EXIT]=],
@@ -349,7 +399,7 @@ local function buildDaemonCmd(binPath, destName, mode)
 		[=[LAST_CFG=$(cat "$CFG" 2>/dev/null || true)]=],
 		[=[while [ -f "$RUN" ] && kill -0 "$OWNER" 2>/dev/null && kill -0 "$PID" 2>/dev/null; do]=],
 		[=[  if [ "$READY" -eq 0 ]; then]=],
-		[=[    if "$BIN" status >/dev/null 2>&1; then READY=1; printf 'ready\n'; fi]=],
+		[=[    if [ -S "$SOCK" ] && "$BIN" status >/dev/null 2>&1; then READY=1; printf 'ready\n'; fi]=],
 		[=[  else]=],
 		[=[    CUR_CFG=$(cat "$CFG" 2>/dev/null || true)]=],
 		[=[    if [ -n "$CUR_CFG" ] && [ "$CUR_CFG" != "$LAST_CFG" ]; then]=],
