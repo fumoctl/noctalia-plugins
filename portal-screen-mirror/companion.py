@@ -544,6 +544,190 @@ _WlInterface._fields_ = [
 ]
 
 
+def detect_wayland_output_refresh_hz(connector_name: str) -> int:
+    """Query the current refresh rate (in Hz) of `connector_name` via core `wl_output`."""
+    if not connector_name:
+        return 60
+    try:
+        libwl = ctypes.CDLL("libwayland-client.so.0")
+    except OSError:
+        libwl_name = ctypes.util.find_library("wayland-client")
+        if not libwl_name:
+            return 60
+        try:
+            libwl = ctypes.CDLL(libwl_name)
+        except OSError:
+            return 60
+
+    try:
+        wl_registry_iface = _WlInterface.in_dll(libwl, "wl_registry_interface")
+        wl_output_iface = _WlInterface.in_dll(libwl, "wl_output_interface")
+    except ValueError:
+        return 60
+
+    libwl.wl_display_connect.argtypes = [ctypes.c_char_p]
+    libwl.wl_display_connect.restype = ctypes.c_void_p
+    libwl.wl_display_disconnect.argtypes = [ctypes.c_void_p]
+    libwl.wl_display_disconnect.restype = None
+    libwl.wl_display_roundtrip.argtypes = [ctypes.c_void_p]
+    libwl.wl_display_roundtrip.restype = ctypes.c_int
+    libwl.wl_proxy_marshal_flags.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(_WlInterface),
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+    ]
+    libwl.wl_proxy_marshal_flags.restype = ctypes.c_void_p
+    libwl.wl_proxy_add_listener.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    libwl.wl_proxy_add_listener.restype = ctypes.c_int
+    libwl.wl_proxy_get_version.argtypes = [ctypes.c_void_p]
+    libwl.wl_proxy_get_version.restype = ctypes.c_uint32
+    libwl.wl_proxy_destroy.argtypes = [ctypes.c_void_p]
+    libwl.wl_proxy_destroy.restype = None
+
+    dpy = libwl.wl_display_connect(None)
+    if not dpy:
+        return 60
+
+    reg = None
+    found: list[dict] = []
+    refs: list = []
+    try:
+        dpy_ver = libwl.wl_proxy_get_version(dpy)
+        reg = libwl.wl_proxy_marshal_flags(
+            ctypes.c_void_p(dpy),
+            ctypes.c_uint32(1),
+            ctypes.byref(wl_registry_iface),
+            ctypes.c_uint32(dpy_ver),
+            ctypes.c_uint32(0),
+            ctypes.c_void_p(None),
+        )
+        if not reg:
+            return 60
+
+        GLOBAL_CB = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32
+        )
+        GLOBAL_RM_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32)
+
+        def on_global(_d, registry, name, interface, version):
+            iface = interface.decode("utf-8", "replace") if interface else ""
+            if iface == "wl_output" and version >= 4:
+                ver = min(int(version), 4)
+                proxy = libwl.wl_proxy_marshal_flags(
+                    ctypes.c_void_p(registry),
+                    ctypes.c_uint32(0),
+                    ctypes.byref(wl_output_iface),
+                    ctypes.c_uint32(ver),
+                    ctypes.c_uint32(0),
+                    ctypes.c_uint32(name),
+                    wl_output_iface.name,
+                    ctypes.c_uint32(ver),
+                    ctypes.c_void_p(None),
+                )
+                if proxy:
+                    found.append({"proxy": proxy, "ver": ver, "name": "", "cur_mhz": 0, "pref_mhz": 0})
+
+        cb_g = GLOBAL_CB(on_global)
+        cb_rm = GLOBAL_RM_CB(lambda *_a: None)
+        reg_listener = (ctypes.c_void_p * 2)(
+            ctypes.cast(cb_g, ctypes.c_void_p),
+            ctypes.cast(cb_rm, ctypes.c_void_p),
+        )
+        refs.extend([cb_g, cb_rm, reg_listener])
+        libwl.wl_proxy_add_listener(reg, ctypes.byref(reg_listener), None)
+        libwl.wl_display_roundtrip(dpy)
+
+        OUT_GEOM = ctypes.CFUNCTYPE(
+            None,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_int32,
+        )
+        OUT_MODE = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32
+        )
+        OUT_DONE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+        OUT_SCALE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32)
+        OUT_NAME = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p)
+
+        c_geom = OUT_GEOM(lambda *_a: None)
+        c_done = OUT_DONE(lambda *_a: None)
+        c_scale = OUT_SCALE(lambda *_a: None)
+        c_desc = OUT_NAME(lambda *_a: None)
+        refs.extend([c_geom, c_done, c_scale, c_desc])
+
+        for entry in found:
+            def mk_cbs(target_entry):
+                def _mode(_d, _o, flags, _w, _h, refresh):
+                    if refresh > 0:
+                        if flags & 1:
+                            target_entry["cur_mhz"] = int(refresh)
+                        elif (flags & 2) and target_entry["pref_mhz"] == 0:
+                            target_entry["pref_mhz"] = int(refresh)
+
+                def _name(_d, _o, nm):
+                    target_entry["name"] = nm.decode("utf-8", "replace") if nm else ""
+
+                return OUT_MODE(_mode), OUT_NAME(_name)
+
+            c_mode, c_name = mk_cbs(entry)
+            lst = (ctypes.c_void_p * 6)(
+                ctypes.cast(c_geom, ctypes.c_void_p),
+                ctypes.cast(c_mode, ctypes.c_void_p),
+                ctypes.cast(c_done, ctypes.c_void_p),
+                ctypes.cast(c_scale, ctypes.c_void_p),
+                ctypes.cast(c_name, ctypes.c_void_p),
+                ctypes.cast(c_desc, ctypes.c_void_p),
+            )
+            refs.extend([c_mode, c_name, lst])
+            libwl.wl_proxy_add_listener(entry["proxy"], ctypes.byref(lst), None)
+
+        if found:
+            libwl.wl_display_roundtrip(dpy)
+
+        for entry in found:
+            if entry["name"] == connector_name:
+                mhz = entry["cur_mhz"] or entry["pref_mhz"]
+                if mhz >= 1000:
+                    return max(24, min(500, int(round(mhz / 1000.0))))
+        return 60
+    finally:
+        for entry in found:
+            if entry.get("proxy"):
+                if entry["ver"] >= 3:
+                    libwl.wl_proxy_marshal_flags(
+                        ctypes.c_void_p(entry["proxy"]),
+                        ctypes.c_uint32(0),
+                        None,
+                        ctypes.c_uint32(entry["ver"]),
+                        ctypes.c_uint32(WL_MARSHAL_FLAG_DESTROY),
+                    )
+                else:
+                    libwl.wl_proxy_destroy(entry["proxy"])
+        if reg:
+            libwl.wl_proxy_destroy(reg)
+        libwl.wl_display_disconnect(dpy)
+
+
+def resolve_fps_spec(raw_spec: str, auto_hz: int) -> int:
+    spec = (raw_spec or "").strip().lower()
+    if spec in ("", "auto"):
+        return max(24, auto_hz)
+    try:
+        return max(0, int(spec))
+    except ValueError:
+        return max(24, auto_hz)
+
+
 def try_run_wlr_screencopy_region(
     stream_srv: PixelStreamServer,
     output_info: dict,
@@ -551,7 +735,8 @@ def try_run_wlr_screencopy_region(
     cursor_mode: int,
     max_w: int,
     max_h: int,
-    max_fps: int,
+    fps_state: dict,
+    poll_fps_update,
     scale_method: int,
     should_continue,
 ) -> tuple[bool, int]:
@@ -891,7 +1076,6 @@ def try_run_wlr_screencopy_region(
             "failed_streak": 0,
             "last_ready_ns": 0,
         }
-        target_period_ns = int(1_000_000_000 / max_fps) if max_fps > 0 else 0
 
         F_BUF = ctypes.CFUNCTYPE(
             None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32
@@ -1028,13 +1212,14 @@ def try_run_wlr_screencopy_region(
                 appsrc.emit("push-buffer", gst_buf)
 
             now_ns = time.monotonic_ns()
-            if target_period_ns <= 0:
+            period_ns = fps_state["period_ns"]
+            if period_ns <= 0:
                 delay_ms = 0
             elif cap_ctx["last_ready_ns"] == 0:
-                delay_ms = max(1, target_period_ns // 1_000_000)
+                delay_ms = max(1, period_ns // 1_000_000)
             else:
                 elapsed_ns = now_ns - cap_ctx["last_ready_ns"]
-                rem_ns = target_period_ns - elapsed_ns
+                rem_ns = period_ns - elapsed_ns
                 delay_ms = 0 if rem_ns <= 500_000 else int((rem_ns + 500_000) // 1_000_000)
             cap_ctx["last_ready_ns"] = now_ns
             schedule_next_frame(delay_ms)
@@ -1123,6 +1308,7 @@ def try_run_wlr_screencopy_region(
                 run_timer = 0
                 main_loop.quit()
                 return GLib.SOURCE_REMOVE
+            poll_fps_update()
             return GLib.SOURCE_CONTINUE
 
         run_timer = GLib.timeout_add(150, check_run_marker)
@@ -1188,11 +1374,13 @@ def main() -> int:
     parser.add_argument("--run-file", required=True)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--data-dir", required=True)
+    parser.add_argument("--destination", default="")
+    parser.add_argument("--fps-file", default="")
     parser.add_argument("--mode", choices=["portal", "region"], default="portal")
     parser.add_argument("--cursor-mode", type=int, default=2)
     parser.add_argument("--max-width", type=int, default=1920)
     parser.add_argument("--max-height", type=int, default=1080)
-    parser.add_argument("--max-fps", type=int, default=60)
+    parser.add_argument("--max-fps", default="auto")
     parser.add_argument("--scale-quality", choices=["balanced", "fast"], default="balanced")
     parser.add_argument("--outputs-json", default="[]")
     args = parser.parse_args()
@@ -1232,7 +1420,33 @@ def main() -> int:
     _GST_MEM.init()
 
     max_w, max_h = clamp_max_dims(args.max_width, args.max_height)
-    max_fps = max(0, int(args.max_fps))
+    auto_hz = detect_wayland_output_refresh_hz(args.destination)
+    fps_state = {"period_ns": 0, "gate_ns": 0, "mtime_ns": -1}
+
+    def apply_fps_spec(spec_str: str) -> None:
+        hz = resolve_fps_spec(spec_str, auto_hz)
+        if hz <= 0:
+            fps_state["period_ns"] = 0
+            fps_state["gate_ns"] = 0
+        else:
+            fps_state["period_ns"] = int(1_000_000_000 / hz)
+            fps_state["gate_ns"] = int(0.90 * 1_000_000_000 / hz)
+
+    def poll_fps_update() -> None:
+        if not args.fps_file:
+            return
+        try:
+            st = os.stat(args.fps_file)
+            if st.st_mtime_ns == fps_state["mtime_ns"]:
+                return
+            fps_state["mtime_ns"] = st.st_mtime_ns
+            with open(args.fps_file, "r", encoding="utf-8") as f:
+                apply_fps_spec(f.read())
+        except OSError:
+            pass
+
+    apply_fps_spec(str(args.max_fps))
+    poll_fps_update()
     scale_method = 0 if args.scale_quality == "fast" else 1
     stream_srv = PixelStreamServer(args.socket)
 
@@ -1248,7 +1462,8 @@ def main() -> int:
                 args.cursor_mode,
                 max_w,
                 max_h,
-                max_fps,
+                fps_state,
+                poll_fps_update,
                 scale_method,
                 should_continue,
             )
@@ -1509,20 +1724,21 @@ def main() -> int:
             src_elem.set_property("fd", pw_fd)
             src_elem.set_property("path", str(node_id))
 
-            if max_fps > 0:
-                min_interval_ns = int(0.90 * 1_000_000_000 / max_fps)
-                last_gate_ns = [0]
+            last_gate_ns = [0]
 
-                def on_rate_gate(_pad, _info):
-                    now = time.monotonic_ns()
-                    if now - last_gate_ns[0] < min_interval_ns:
-                        return Gst.PadProbeReturn.DROP
-                    last_gate_ns[0] = now
+            def on_rate_gate(_pad, _info):
+                gate_ns = fps_state["gate_ns"]
+                if gate_ns <= 0:
                     return Gst.PadProbeReturn.OK
+                now = time.monotonic_ns()
+                if now - last_gate_ns[0] < gate_ns:
+                    return Gst.PadProbeReturn.DROP
+                last_gate_ns[0] = now
+                return Gst.PadProbeReturn.OK
 
-                pipeline.get_by_name("q").get_static_pad("src").add_probe(
-                    Gst.PadProbeType.BUFFER, on_rate_gate
-                )
+            pipeline.get_by_name("q").get_static_pad("src").add_probe(
+                Gst.PadProbeType.BUFFER, on_rate_gate
+            )
 
             if crop_fractions is not None:
                 fx0, fy0, fx1, fy1 = crop_fractions
@@ -1581,6 +1797,7 @@ def main() -> int:
                     run_timer = 0
                     main_loop.quit()
                     return GLib.SOURCE_REMOVE
+                poll_fps_update()
                 return GLib.SOURCE_CONTINUE
 
             run_timer = GLib.timeout_add(150, check_run_marker)

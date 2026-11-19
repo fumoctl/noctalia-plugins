@@ -14,7 +14,8 @@
     },
     "max_fps": {
       "label": "Max frame rate",
-      "description": "Caps mirror capture and conversion rate on newly started sessions.",
+      "description": "Caps mirror capture and conversion rate (can also be changed live from the bar panel).",
+      "auto": "Auto (Match display)",
       "fps_30": "30 FPS (Battery saver)",
       "fps_60": "60 FPS (Smooth video)",
       "fps_120": "120 FPS (High refresh)",
@@ -49,7 +50,8 @@
   },
   "panel": {
     "destination_label": "1. Destination screen",
-    "source_label": "2. Capture source",
+    "fps_label": "2. Frame rate",
+    "source_label": "3. Capture source",
     "portal_button": "Portal Picker (Screen or Window)",
     "region_button": "Rectangular Region",
     "stop_button": "Stop Mirroring",

@@ -125,10 +125,11 @@ If you install from Noctalia's built-in `community` store (or manage Noctalia vi
 
 Enable `fumoctl/portal-screen-mirror` in **Settings → Plugins**, then add the `mirror` bar widget to your bar (`type = "fumoctl/portal-screen-mirror:mirror"`) or add the `toggle` tile to Control Center shortcuts.
 
-Clicking the bar widget opens the two-step `controls` panel:
+Clicking the bar widget opens the `controls` panel:
 
 1. Select the **destination screen** (external, unfocused displays such as `HDMI-A-1` sort ahead of `eDP-*` laptop panels).
-2. Click **Portal Picker (Screen or Window)** to choose any monitor or window via your desktop portal, or **Rectangular Region** to drag a crop box with `slurp`.
+2. Choose the **frame rate** (`Auto` matches the destination display's live Wayland refresh rate via `wl_output.mode`, or pick `30`, `60`, `120`, or `Uncapped` — can also be changed live while mirroring).
+3. Click **Portal Picker (Screen or Window)** to choose any monitor or window via your desktop portal, or **Rectangular Region** to drag a crop box with `slurp`.
 
 While mirroring is active, right-clicking the bar widget (or clicking **Stop Mirroring** inside the panel) stops the stream immediately.
 
@@ -144,7 +145,7 @@ noctalia msg panel-toggle fumoctl/portal-screen-mirror:controls
 | --- | --- | --- | --- |
 | `show_cursor` | `bool` | `true` | Embeds the pointer cursor in newly started `ScreenCast` streams (`cursor_mode = 2`). |
 | `fit` | `select` | `"contain"` | Controls how the stream scales inside the destination output (`contain`, `cover`, or `stretch`). |
-| `max_fps` | `select` | `"60"` | Caps capture and conversion rate on newly started sessions (`"30"`, `"60"`, `"120"`, or `"0"` uncapped). |
+| `max_fps` | `select` | `"auto"` | Default frame rate cap (`"auto"` matches destination display refresh rate, `"30"`, `"60"`, `"120"`, or `"0"` uncapped; also adjustable inside the bar panel). |
 | `scale_quality` | `select` | `"balanced"` | Chooses between bilinear downscaling (`"balanced"`) and low-latency nearest-neighbor (`"fast"`). |
 
 ## IPC
@@ -166,5 +167,5 @@ noctalia msg plugin fumoctl/portal-screen-mirror:mirror-service all stop
 ## Notes
 
 - **Processes spawned**: `service.luau` launches bundled `companion.py`, which invokes `slurp` only when **Rectangular Region** mode is selected.
-- **Filesystem writes**: Writes transient session coordination files (`mirror.run` and `stream.sock`) and per-output portal restore tokens (`restore_tokens.json`, mode `0600`) solely inside `noctalia.pluginDataDir()`.
+- **Filesystem writes**: Writes transient session coordination files (`mirror.run`, `fps.run`, and `stream.sock`), UI frame-rate preference (`prefs.json`), and per-output portal restore tokens (`restore_tokens.json`, mode `0600`) solely inside `noctalia.pluginDataDir()`.
 - **Network**: Makes zero network requests; all communication stays local over session D-Bus, Wayland, PipeWire, and an owner-only (`0600`) Unix `SOCK_SEQPACKET` socket.

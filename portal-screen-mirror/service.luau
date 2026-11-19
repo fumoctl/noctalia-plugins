@@ -3,16 +3,33 @@
 local PANEL_ID = "fumoctl/portal-screen-mirror:controls"
 local LAYER_ID = "display"
 
+local VALID_FPS = {
+	auto = true,
+	["30"] = true,
+	["60"] = true,
+	["120"] = true,
+	["0"] = true,
+}
+
+local function normalizeFps(value)
+	local s = tostring(value or "auto")
+	return VALID_FPS[s] and s or "auto"
+end
+
 local pluginDir = noctalia.pluginDir()
 local dataDir = noctalia.pluginDataDir()
 local runFile = dataDir and (dataDir .. "/mirror.run") or nil
+local fpsFile = dataDir and (dataDir .. "/fps.run") or nil
+local prefsFile = dataDir and (dataDir .. "/prefs.json") or nil
 local sockFile = dataDir and (dataDir .. "/stream.sock") or nil
 
 local sessionCounter = 0
 local lastRequestSerial = -1
+local lastFpsSerial = -1
 local streamActive = false
 local notifyOnStop = false
 local pendingRestart = nil
+local selectedFps = normalizeFps(noctalia.getConfig("max_fps"))
 
 local status = {
 	phase = "stopped",
@@ -33,6 +50,47 @@ end
 
 local function isInternalPanel(name)
 	return string.sub(name or "", 1, 4) == "eDP-"
+end
+
+local function syncFpsState(persistPrefs, configBase)
+	if fpsFile ~= nil then
+		noctalia.writeFile(fpsFile, selectedFps .. "\n")
+	end
+	if persistPrefs and prefsFile ~= nil then
+		local encoded = noctalia.json.encode({
+			max_fps = selectedFps,
+			config_base = configBase or normalizeFps(noctalia.getConfig("max_fps")),
+		})
+		if type(encoded) == "string" then
+			noctalia.writeFile(prefsFile, encoded .. "\n")
+		end
+	end
+	noctalia.state.set("mirror_prefs", {
+		max_fps = selectedFps,
+	})
+end
+
+local function loadInitialFps()
+	local cfgFps = normalizeFps(noctalia.getConfig("max_fps"))
+	selectedFps = cfgFps
+	if prefsFile ~= nil then
+		local raw = noctalia.readFile(prefsFile)
+		if type(raw) == "string" and raw ~= "" then
+			local parsed = noctalia.json.decode(raw)
+			if type(parsed) == "table" then
+				local savedBase = normalizeFps(parsed.config_base)
+				local savedFps = normalizeFps(parsed.max_fps)
+				if savedBase == cfgFps then
+					selectedFps = savedFps
+				else
+					selectedFps = cfgFps
+					syncFpsState(true, cfgFps)
+					return
+				end
+			end
+		end
+	end
+	syncFpsState(false, cfgFps)
 end
 
 local function publishStatus(phase, message)
@@ -90,6 +148,9 @@ end
 local function cleanupFiles()
 	if runFile ~= nil then
 		noctalia.removeFile(runFile)
+	end
+	if fpsFile ~= nil then
+		noctalia.removeFile(fpsFile)
 	end
 	if sockFile ~= nil then
 		noctalia.removeFile(sockFile)
@@ -157,12 +218,10 @@ local function buildCompanionCmd(sessionId, destOut, mode)
 	local maxW = math.max(64, math.floor((tonumber(destOut.width) or 1920) * scale + 0.5))
 	local maxH = math.max(64, math.floor((tonumber(destOut.height) or 1080) * scale + 0.5))
 	local cursorMode = noctalia.getConfig("show_cursor") ~= false and 2 or 1
-	local rawMaxFps = tonumber(noctalia.getConfig("max_fps"))
-	local maxFps = (rawMaxFps ~= nil and rawMaxFps >= 0) and math.floor(rawMaxFps) or 60
 	local scaleQuality = noctalia.getConfig("scale_quality") == "fast" and "fast" or "balanced"
 	local outputsJson = noctalia.json.encode(noctalia.outputs() or {}) or "[]"
 
-	return table.concat({
+	local args = {
 		shellQuote(companionPath),
 		"--socket",
 		shellQuote(sockFile),
@@ -172,6 +231,8 @@ local function buildCompanionCmd(sessionId, destOut, mode)
 		shellQuote(sessionId),
 		"--data-dir",
 		shellQuote(dataDir),
+		"--destination",
+		shellQuote(destOut.name or ""),
 		"--mode",
 		shellQuote(mode),
 		"--cursor-mode",
@@ -181,13 +242,18 @@ local function buildCompanionCmd(sessionId, destOut, mode)
 		"--max-height",
 		tostring(maxH),
 		"--max-fps",
-		tostring(maxFps),
+		shellQuote(selectedFps),
 		"--scale-quality",
 		shellQuote(scaleQuality),
 		"--outputs-json",
 		shellQuote(outputsJson),
-		"2>/dev/null || printf 'exited:%s\\n' \"$?\"",
-	}, " ")
+	}
+	if fpsFile ~= nil then
+		table.insert(args, "--fps-file")
+		table.insert(args, shellQuote(fpsFile))
+	end
+	table.insert(args, "2>/dev/null || printf 'exited:%s\\n' \"$?\"")
+	return table.concat(args, " ")
 end
 
 local function handleStreamLine(line)
@@ -261,6 +327,9 @@ startMirror = function(destination, mode)
 
 	sessionCounter += 1
 	local sessionId = tostring(noctalia.nowMs()) .. "-" .. tostring(sessionCounter)
+	if fpsFile ~= nil then
+		noctalia.writeFile(fpsFile, selectedFps .. "\n")
+	end
 	local ok, err = noctalia.writeFile(runFile, sessionId .. "\n")
 	if not ok then
 		finishFailed(err or tr("error.launch_failed"))
@@ -282,6 +351,23 @@ startMirror = function(destination, mode)
 	end
 end
 
+noctalia.state.watch("mirror_fps_request", function(req)
+	if type(req) ~= "table" then
+		return
+	end
+	if type(req.serial) == "number" then
+		if req.serial == lastFpsSerial then
+			return
+		end
+		lastFpsSerial = req.serial
+	end
+	local nextFps = normalizeFps(req.max_fps)
+	if nextFps ~= selectedFps then
+		selectedFps = nextFps
+		syncFpsState(true, normalizeFps(noctalia.getConfig("max_fps")))
+	end
+end)
+
 noctalia.state.watch("mirror_request", function(req)
 	if type(req) ~= "table" then
 		return
@@ -291,6 +377,14 @@ noctalia.state.watch("mirror_request", function(req)
 			return
 		end
 		lastRequestSerial = req.serial
+	end
+
+	if req.max_fps ~= nil then
+		local nextFps = normalizeFps(req.max_fps)
+		if nextFps ~= selectedFps then
+			selectedFps = nextFps
+			syncFpsState(true, normalizeFps(noctalia.getConfig("max_fps")))
+		end
 	end
 
 	if req.action == "start" then
@@ -309,7 +403,9 @@ function onOutputsChanged()
 end
 
 function onConfigChanged()
-	-- Keep active session intact; new show_cursor setting applies on next start.
+	local cfgFps = normalizeFps(noctalia.getConfig("max_fps"))
+	selectedFps = cfgFps
+	syncFpsState(true, cfgFps)
 end
 
 function onIpc(event, payload)
@@ -346,4 +442,5 @@ function onExit(_signal, _reason)
 end
 
 cleanupFiles()
+loadInitialFps()
 publishStatus("stopped", "")

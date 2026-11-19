@@ -1,6 +1,6 @@
 id = "fumoctl/portal-screen-mirror"
 name = "Portal Screen Mirror"
-version = "1.1.0"
+version = "1.2.0"
 plugin_api = 50
 author = "fumoctl"
 license = "MIT"
@@ -33,8 +33,9 @@ key = "max_fps"
 type = "select"
 label_key = "settings.max_fps.label"
 description_key = "settings.max_fps.description"
-default = "60"
+default = "auto"
 options = [
+  { value = "auto", label_key = "settings.max_fps.auto" },
   { value = "30", label_key = "settings.max_fps.fps_30" },
   { value = "60", label_key = "settings.max_fps.fps_60" },
   { value = "120", label_key = "settings.max_fps.fps_120" },
@@ -61,7 +62,7 @@ id = "controls"
 entry = "panel.luau"
 width = 380
 height = "content"
-max_height = 520
+max_height = 580
 placement = "attached"
 position = "auto"
 open_near_click = true

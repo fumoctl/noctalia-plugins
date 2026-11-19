@@ -1,10 +1,47 @@
 --!nonstrict
 
+local FPS_OPTIONS = {
+	{ value = "auto", label_key = "settings.max_fps.auto" },
+	{ value = "30", label_key = "settings.max_fps.fps_30" },
+	{ value = "60", label_key = "settings.max_fps.fps_60" },
+	{ value = "120", label_key = "settings.max_fps.fps_120" },
+	{ value = "0", label_key = "settings.max_fps.uncapped" },
+}
+
+local VALID_FPS = {
+	auto = true,
+	["30"] = true,
+	["60"] = true,
+	["120"] = true,
+	["0"] = true,
+}
+
+local function normalizeFps(value)
+	local s = tostring(value or "auto")
+	return VALID_FPS[s] and s or "auto"
+end
+
+local function findFpsIndex(value)
+	local target = normalizeFps(value)
+	for idx, item in ipairs(FPS_OPTIONS) do
+		if item.value == target then
+			return idx - 1
+		end
+	end
+	return 0
+end
+
 local outputs = {}
 local destinationName = nil
 local destinationIndex = -1
 local requestSerial = 0
+local fpsSerial = 0
 local render
+
+local initialPrefs = noctalia.state.get("mirror_prefs")
+local selectedFps = normalizeFps(
+	(type(initialPrefs) == "table" and initialPrefs.max_fps) or noctalia.getConfig("max_fps")
+)
 
 local status = noctalia.state.get("mirror_status") or {
 	phase = "stopped",
@@ -123,6 +160,7 @@ local function startMode(mode)
 		action = "start",
 		mode = mode,
 		destination = destinationName,
+		max_fps = selectedFps,
 		serial = requestSerial,
 	})
 	panel.close()
@@ -145,6 +183,20 @@ function onDestinationChanged(idxStr)
 	if idx ~= nil and outputs[idx + 1] ~= nil then
 		destinationName = outputs[idx + 1].name
 		destinationIndex = idx
+		render()
+	end
+end
+
+function onFpsChanged(idxStr)
+	local idx = tonumber(idxStr)
+	local chosen = idx ~= nil and FPS_OPTIONS[idx + 1] or nil
+	if chosen ~= nil then
+		selectedFps = chosen.value
+		fpsSerial += 1
+		noctalia.state.set("mirror_fps_request", {
+			max_fps = selectedFps,
+			serial = fpsSerial,
+		})
 		render()
 	end
 end
@@ -219,6 +271,11 @@ render = function()
 			table.insert(optionLabels, outputLabel(out))
 		end
 
+		local fpsLabels = {}
+		for _, item in ipairs(FPS_OPTIONS) do
+			table.insert(fpsLabels, tr(item.label_key))
+		end
+
 		table.insert(
 			children,
 			ui.column({ gap = 6 }, {
@@ -234,6 +291,25 @@ render = function()
 					enabled = not busy,
 					controlSize = "md",
 					onChange = "onDestinationChanged",
+				}),
+			})
+		)
+
+		table.insert(
+			children,
+			ui.column({ gap = 6 }, {
+				ui.label({
+					text = tr("panel.fps_label"),
+					fontWeight = "medium",
+					color = "on_surface_variant",
+				}),
+				ui.select({
+					key = "fps-select",
+					options = fpsLabels,
+					selectedIndex = findFpsIndex(selectedFps),
+					enabled = phase ~= "stopping",
+					controlSize = "md",
+					onChange = "onFpsChanged",
 				}),
 			})
 		)
@@ -280,10 +356,32 @@ noctalia.state.watch("mirror_status", function(value)
 	end
 end)
 
+noctalia.state.watch("mirror_prefs", function(value)
+	if type(value) == "table" and value.max_fps ~= nil then
+		local nextFps = normalizeFps(value.max_fps)
+		if nextFps ~= selectedFps then
+			selectedFps = nextFps
+			render()
+		end
+	end
+end)
+
 function onOpen(_context)
 	local current = noctalia.state.get("mirror_status")
 	if type(current) == "table" then
 		status = current
+	end
+	local prefs = noctalia.state.get("mirror_prefs")
+	if type(prefs) == "table" and prefs.max_fps ~= nil then
+		selectedFps = normalizeFps(prefs.max_fps)
+	end
+	render()
+end
+
+function onConfigChanged()
+	local prefs = noctalia.state.get("mirror_prefs")
+	if type(prefs) == "table" and prefs.max_fps ~= nil then
+		selectedFps = normalizeFps(prefs.max_fps)
 	end
 	render()
 end
