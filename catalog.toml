@@ -1,0 +1,12 @@
+[[plugin]]
+id = "fumoctl/portal-screen-mirror"
+name = "Portal Screen Mirror"
+version = "1.0.0"
+author = "fumoctl"
+license = "MIT"
+icon = "screen-share"
+description = "Mirror any screen, window, or rectangular region to another display via XDG ScreenCast and layer-shell."
+deprecated = false
+plugin_api = 50
+tags = ["bar", "panel", "service", "shortcut", "umbriel", "utility", "video"]
+dependencies = ["python3", "slurp"]
