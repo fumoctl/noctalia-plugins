@@ -11,7 +11,7 @@ Mirror any screen, individual window, or rectangular region onto another display
 | Field | Value |
 | --- | --- |
 | ID | `fumoctl/portal-screen-mirror` |
-| Version | `2.0.1` |
+| Version | `2.0.3` |
 | Entries | Bar widget: `mirror`; panel: `controls`; service: `mirror-service`; shortcut: `toggle` |
 | Dependency | [`portal-screen-mirror`](https://github.com/fumoctl/portal-screen-mirror) |
 
@@ -87,7 +87,7 @@ sudo apt install cargo rustc pkg-config libpipewire-0.3-dev libwayland-dev libxk
 cargo install --git https://github.com/fumoctl/portal-screen-mirror
 ```
 
-*(Ensure `~/.cargo/bin` is on your session `PATH` or copy `~/.cargo/bin/portal-screen-mirror` to `/usr/local/bin`.)*
+*(The plugin automatically checks `PATH`, `${CARGO_HOME:-~/.cargo}/bin`, and `~/.local/bin` — no extra `PATH` setup needed after `cargo install`.)*
 
 ## Usage
 

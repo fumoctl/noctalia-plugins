@@ -12,6 +12,23 @@ local function tr(key, values)
 	return noctalia.tr(key, values)
 end
 
+local function isBinaryAvailable()
+	if status.binary_available == true or noctalia.commandExists("portal-screen-mirror") then
+		return true
+	end
+	local dataDir = noctalia.pluginDataDir() or ""
+	local home = string.match(dataDir, "^(.-)/%.local/") or string.match(dataDir, "^(/home/[^/]+)")
+	if type(home) == "string" and home ~= "" then
+		if
+			noctalia.commandExists(home .. "/.cargo/bin/portal-screen-mirror")
+			or noctalia.commandExists(home .. "/.local/bin/portal-screen-mirror")
+		then
+			return true
+		end
+	end
+	return false
+end
+
 local function modeLabel(mode)
 	if mode == "region" then
 		return tr("mode.region")
@@ -48,7 +65,11 @@ local function render()
 	else
 		barWidget.setGlyph("screen-share")
 		barWidget.setGlyphColor("on_surface")
-		barWidget.setTooltip(tr("widget.ready"))
+		if not isBinaryAvailable() then
+			barWidget.setTooltip(tr("error.binary_missing"))
+		else
+			barWidget.setTooltip(tr("widget.ready"))
+		end
 	end
 end
 

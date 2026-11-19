@@ -110,13 +110,17 @@ local function refreshOutputs()
 	destinationIndex = findOutputIndex(outputs, destinationName)
 end
 
-local function statusBanner()
+local function statusBanner(binaryAvailable)
 	local phase = status.phase or "stopped"
 	local glyph = "screen-share"
 	local color = "on_surface_variant"
 	local text = tr("panel.status_ready")
 
-	if phase == "running" then
+	if not binaryAvailable then
+		glyph = "alert-circle"
+		color = "error"
+		text = tr("error.binary_missing")
+	elseif phase == "running" then
 		glyph = "screen-share"
 		color = "primary"
 		text = tr("panel.status_running", { destination = status.destination or "?" })
@@ -134,6 +138,8 @@ local function statusBanner()
 		text = (type(status.message) == "string" and status.message ~= "") and status.message or tr("widget.error")
 	end
 
+	local isError = (not binaryAvailable) or phase == "error"
+
 	return ui.row({
 		gap = 10,
 		padding = 12,
@@ -144,7 +150,7 @@ local function statusBanner()
 		ui.glyph({ name = glyph, size = 18, color = color }),
 		ui.label({
 			text = text,
-			color = phase == "error" and "error" or "on_surface",
+			color = isError and "error" or "on_surface",
 			maxLines = 2,
 			flexGrow = 1,
 		}),
@@ -209,9 +215,36 @@ function onRegionClicked()
 	startMode("region")
 end
 
+function onOpenRepoClicked()
+	requestSerial += 1
+	noctalia.state.set("mirror_request", {
+		action = "open_repo",
+		serial = requestSerial,
+	})
+	panel.close()
+end
+
+local function isBinaryAvailable()
+	if status.binary_available == true or noctalia.commandExists("portal-screen-mirror") then
+		return true
+	end
+	local dataDir = noctalia.pluginDataDir() or ""
+	local home = string.match(dataDir, "^(.-)/%.local/") or string.match(dataDir, "^(/home/[^/]+)")
+	if type(home) == "string" and home ~= "" then
+		if
+			noctalia.commandExists(home .. "/.cargo/bin/portal-screen-mirror")
+			or noctalia.commandExists(home .. "/.local/bin/portal-screen-mirror")
+		then
+			return true
+		end
+	end
+	return false
+end
+
 render = function()
 	refreshOutputs()
 
+	local binaryAvailable = isBinaryAvailable()
 	local phase = status.phase or "stopped"
 	local active = phase == "running" or phase == "starting"
 	local busy = phase == "starting" or phase == "stopping"
@@ -234,7 +267,7 @@ render = function()
 				onClick = "onCloseClicked",
 			}),
 		}),
-		statusBanner(),
+		statusBanner(binaryAvailable),
 	}
 
 	if active then
@@ -252,7 +285,37 @@ render = function()
 		)
 	end
 
-	if #outputs < 2 then
+	if not binaryAvailable then
+		table.insert(
+			children,
+			ui.column({
+				gap = 8,
+				padding = 12,
+				fill = "surface_container",
+				radius = 10,
+			}, {
+				ui.label({ text = tr("panel.missing_binary_title"), fontWeight = "bold" }),
+				ui.label({
+					text = tr("panel.missing_binary_body"),
+					color = "on_surface_variant",
+					maxLines = 4,
+				}),
+				ui.label({
+					text = "github.com/fumoctl/portal-screen-mirror",
+					color = "primary",
+					maxLines = 1,
+				}),
+				ui.button({
+					key = "open-repo-btn",
+					text = tr("panel.open_repo_button"),
+					glyph = "external-link",
+					variant = "primary",
+					controlSize = "lg",
+					onClick = "onOpenRepoClicked",
+				}),
+			})
+		)
+	elseif #outputs < 2 then
 		table.insert(
 			children,
 			ui.column({
@@ -374,6 +437,13 @@ function onOpen(_context)
 	local prefs = noctalia.state.get("mirror_prefs")
 	if type(prefs) == "table" and prefs.max_fps ~= nil then
 		selectedFps = normalizeFps(prefs.max_fps)
+	end
+	if not isBinaryAvailable() then
+		requestSerial += 1
+		noctalia.state.set("mirror_request", {
+			action = "probe_binary",
+			serial = requestSerial,
+		})
 	end
 	render()
 end

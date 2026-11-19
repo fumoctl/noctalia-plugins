@@ -35,6 +35,33 @@ local liveFile = dataDir and (dataDir .. "/live.cfg") or nil
 local errFile = dataDir and (dataDir .. "/mirror.err") or nil
 local prefsFile = dataDir and (dataDir .. "/prefs.json") or nil
 
+local function detectHomeDir()
+	local d = dataDir or ""
+	return string.match(d, "^(.-)/%.local/") or string.match(d, "^(/home/[^/]+)")
+end
+
+local function resolveBinarySync()
+	if noctalia.commandExists("portal-screen-mirror") then
+		return "portal-screen-mirror"
+	end
+	local home = detectHomeDir()
+	if type(home) == "string" and home ~= "" then
+		local cargoCand = home .. "/.cargo/bin/portal-screen-mirror"
+		if noctalia.commandExists(cargoCand) then
+			return cargoCand
+		end
+		local localCand = home .. "/.local/bin/portal-screen-mirror"
+		if noctalia.commandExists(localCand) then
+			return localCand
+		end
+	end
+	return nil
+end
+
+local resolvedBin = resolveBinarySync()
+local probingBinary = false
+local pendingStart = nil
+
 local sessionCounter = 0
 local lastRequestSerial = -1
 local lastFpsSerial = -1
@@ -46,6 +73,7 @@ local selectedFps = normalizeFps(noctalia.getConfig("max_fps"))
 local status = {
 	phase = "stopped",
 	running = false,
+	binary_available = resolvedBin ~= nil,
 	destination = nil,
 	mode = nil,
 	message = "",
@@ -113,16 +141,79 @@ local function loadInitialFps()
 end
 
 local function publishStatus(phase, message)
+	local syncBin = resolveBinarySync()
+	if syncBin ~= nil then
+		resolvedBin = syncBin
+	end
 	status.phase = phase
 	status.running = phase == "running"
+	status.binary_available = resolvedBin ~= nil
 	status.message = message or ""
 	noctalia.state.set("mirror_status", {
 		phase = status.phase,
 		running = status.running,
+		binary_available = status.binary_available,
 		destination = status.destination,
 		mode = status.mode,
 		message = status.message,
 	})
+end
+
+local startMirror
+
+local function probeBinary(thenStart)
+	local syncBin = resolveBinarySync()
+	if syncBin ~= nil then
+		resolvedBin = syncBin
+		publishStatus(status.phase, status.message)
+		if thenStart ~= nil then
+			startMirror(thenStart.destination, thenStart.mode)
+		end
+		return
+	end
+
+	if streamActive or probingBinary then
+		if thenStart ~= nil then
+			pendingStart = thenStart
+		end
+		return
+	end
+
+	if thenStart ~= nil then
+		pendingStart = thenStart
+	end
+	probingBinary = true
+
+	local probeCmd = table.concat({
+		[=[for cand in "$(command -v portal-screen-mirror 2>/dev/null)" "${CARGO_HOME:-$HOME/.cargo}/bin/portal-screen-mirror" "$HOME/.local/bin/portal-screen-mirror"; do]=],
+		[=[  if [ -n "$cand" ] && [ -x "$cand" ]; then printf 'found:%s\n' "$cand"; exit 0; fi]=],
+		[=[done]=],
+		[=[printf 'missing\n']=],
+	}, "\n")
+
+	if not noctalia.runStream(probeCmd, function(line)
+		line = noctalia.string.trim(line or "")
+		if string.sub(line, 1, 6) == "found:" then
+			resolvedBin = noctalia.string.trim(string.sub(line, 7))
+			probingBinary = false
+			publishStatus(status.phase, status.message)
+			if pendingStart ~= nil then
+				local req = pendingStart
+				pendingStart = nil
+				startMirror(req.destination, req.mode)
+			end
+		elseif line == "missing" then
+			resolvedBin = nil
+			probingBinary = false
+			publishStatus(status.phase, status.message)
+			if pendingStart ~= nil then
+				pendingStart = nil
+				noctalia.notifyError(tr("title"), tr("error.binary_missing"))
+			end
+		end
+	end) then
+		probingBinary = false
+	end
 end
 
 local function findOutput(name)
@@ -175,8 +266,6 @@ local function cleanupFiles()
 	end
 end
 
-local startMirror
-
 local function finishStopped(showOsd, customMsg)
 	streamActive = false
 	notifyOnStop = false
@@ -222,13 +311,13 @@ local function stopMirror(showOsd, customMsg)
 	end
 end
 
-local function buildDaemonCmd(destName, mode)
+local function buildDaemonCmd(binPath, destName, mode)
 	local fit = normalizeFit(noctalia.getConfig("fit"))
 	local filter = normalizeFilter(noctalia.getConfig("scale_quality"))
 	local showCursor = noctalia.getConfig("show_cursor") ~= false
 
 	local launchParts = {
-		"portal-screen-mirror",
+		'"$BIN"',
 		shellQuote(mode),
 		"--to",
 		shellQuote(destName),
@@ -245,33 +334,34 @@ local function buildDaemonCmd(destName, mode)
 	local launchCmd = table.concat(launchParts, " ") .. ' >"$ERR" 2>&1 &'
 
 	return table.concat({
+		"BIN=" .. shellQuote(binPath),
 		"RUN=" .. shellQuote(runFile),
 		"CFG=" .. shellQuote(liveFile),
 		"ERR=" .. shellQuote(errFile),
 		"OWNER=$PPID",
 		': > "$ERR"',
-		"portal-screen-mirror stop >/dev/null 2>&1 || true",
+		'"$BIN" stop >/dev/null 2>&1 || true',
 		launchCmd,
 		"PID=$!",
-		[=[trap 'portal-screen-mirror stop >/dev/null 2>&1 || true; kill -TERM "$PID" 2>/dev/null || true' HUP INT TERM EXIT]=],
+		[=[trap '"$BIN" stop >/dev/null 2>&1 || true; kill -TERM "$PID" 2>/dev/null || true' HUP INT TERM EXIT]=],
 		[=[printf 'selecting\n']=],
 		"READY=0",
 		[=[LAST_CFG=$(cat "$CFG" 2>/dev/null || true)]=],
 		[=[while [ -f "$RUN" ] && kill -0 "$OWNER" 2>/dev/null && kill -0 "$PID" 2>/dev/null; do]=],
 		[=[  if [ "$READY" -eq 0 ]; then]=],
-		[=[    if portal-screen-mirror status >/dev/null 2>&1; then READY=1; printf 'ready\n'; fi]=],
+		[=[    if "$BIN" status >/dev/null 2>&1; then READY=1; printf 'ready\n'; fi]=],
 		[=[  else]=],
 		[=[    CUR_CFG=$(cat "$CFG" 2>/dev/null || true)]=],
 		[=[    if [ -n "$CUR_CFG" ] && [ "$CUR_CFG" != "$LAST_CFG" ]; then]=],
 		[=[      LAST_CFG="$CUR_CFG"]=],
 		[=[      set -- $CUR_CFG]=],
-		[=[      if [ "$#" -ge 3 ]; then portal-screen-mirror set --fit "$1" --filter "$2" --max-fps "$3" >/dev/null 2>&1 || true; fi]=],
+		[=[      if [ "$#" -ge 3 ]; then "$BIN" set --fit "$1" --filter "$2" --max-fps "$3" >/dev/null 2>&1 || true; fi]=],
 		[=[    fi]=],
 		[=[  fi]=],
 		[=[  sleep 0.1]=],
 		[=[done]=],
 		[=[if [ ! -f "$RUN" ] || ! kill -0 "$OWNER" 2>/dev/null; then]=],
-		[=[  portal-screen-mirror stop >/dev/null 2>&1 || true]=],
+		[=[  "$BIN" stop >/dev/null 2>&1 || true]=],
 		[=[  kill -TERM "$PID" 2>/dev/null || true]=],
 		[=[  ATTEMPT=0]=],
 		[=[  while kill -0 "$PID" 2>/dev/null && [ "$ATTEMPT" -lt 20 ]; do sleep 0.05; ATTEMPT=$((ATTEMPT + 1)); done]=],
@@ -332,10 +422,16 @@ startMirror = function(destination, mode)
 		finishFailed(tr("error.launch_failed"))
 		return
 	end
-	if not noctalia.commandExists("portal-screen-mirror") then
-		finishFailed(tr("error.binary_missing"))
+
+	local syncBin = resolveBinarySync()
+	if syncBin ~= nil then
+		resolvedBin = syncBin
+	end
+	if resolvedBin == nil then
+		probeBinary({ destination = destination, mode = mode })
 		return
 	end
+
 	if mode == "portal" and not noctalia.portalAvailable() then
 		finishFailed(tr("error.portal_unavailable"))
 		return
@@ -368,7 +464,7 @@ startMirror = function(destination, mode)
 	streamActive = true
 	publishStatus("starting", tr("panel.status_starting"))
 
-	local cmd = buildDaemonCmd(destOut.name, mode)
+	local cmd = buildDaemonCmd(resolvedBin, destOut.name, mode)
 	if not noctalia.runStream(cmd, handleStreamLine) then
 		streamActive = false
 		cleanupFiles()
@@ -417,6 +513,15 @@ noctalia.state.watch("mirror_request", function(req)
 	elseif req.action == "stop" then
 		pendingRestart = nil
 		stopMirror(true)
+	elseif req.action == "probe_binary" then
+		probeBinary(nil)
+	elseif req.action == "open_repo" then
+		if not streamActive and not probingBinary then
+			noctalia.runStream(
+				"xdg-open 'https://github.com/fumoctl/portal-screen-mirror' >/dev/null 2>&1 || true",
+				function(_) end
+			)
+		end
 	end
 end)
 
@@ -468,3 +573,6 @@ end
 cleanupFiles()
 loadInitialFps()
 publishStatus("stopped", "")
+if resolvedBin == nil then
+	probeBinary(nil)
+end

@@ -57,6 +57,9 @@
     "stop_button": "Stop Mirroring",
     "no_outputs_title": "Single display active",
     "no_outputs_body": "Connect a second display (e.g. HDMI) to start mirroring.",
+    "missing_binary_title": "portal-screen-mirror required",
+    "missing_binary_body": "Install portal-screen-mirror (checked in PATH, ~/.cargo/bin, and ~/.local/bin) via Nix flake or Cargo to mirror screens, windows, and regions.",
+    "open_repo_button": "Open GitHub Repository",
     "status_ready": "Choose a destination display, then pick a source.",
     "status_starting": "Waiting for source selection…",
     "status_running": "Mirroring to {destination}"

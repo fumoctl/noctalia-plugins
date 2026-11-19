@@ -1,7 +1,7 @@
 [[plugin]]
 id = "fumoctl/portal-screen-mirror"
 name = "Portal Screen Mirror"
-version = "2.0.1"
+version = "2.0.3"
 author = "fumoctl"
 license = "MIT"
 icon = "screen-share"
